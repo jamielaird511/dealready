@@ -1,6 +1,6 @@
 import Link from "next/link";
 
-export default function Privacy() {
+export default function Security() {
   return (
     <div className="min-h-screen bg-white">
       <main className="mx-auto max-w-3xl px-6 py-24 sm:px-8 sm:py-32">
@@ -14,123 +14,112 @@ export default function Privacy() {
         </div>
 
         <h1 className="mb-12 text-4xl font-semibold tracking-tight text-gray-900 sm:text-5xl">
-          Privacy
+          Security
         </h1>
 
         <div className="space-y-12 text-gray-700">
-          {/* Overview */}
+          {/* Approach */}
           <section>
             <h2 className="mb-4 text-2xl font-semibold text-gray-900">
-              Overview
+              Approach
             </h2>
             <p className="leading-8">
-              DealReady is an application readiness tool for lenders. It is not credit advice.
+              Our security approach focuses on minimising retention and protecting confidentiality of information.
             </p>
           </section>
 
-          {/* Information we collect */}
+          {/* Encryption */}
           <section>
             <h2 className="mb-4 text-2xl font-semibold text-gray-900">
-              Information we collect
+              Encryption
             </h2>
             <ul className="space-y-3 leading-8">
               <li className="flex items-start">
                 <span className="mr-2 text-gray-400">•</span>
-                <span>Contact details submitted via the website</span>
+                <span>Data in transit is encrypted using HTTPS/TLS</span>
               </li>
               <li className="flex items-start">
                 <span className="mr-2 text-gray-400">•</span>
-                <span>If and when users upload documents in the product, those documents are used only to provide the service</span>
+                <span>Data at rest is encrypted where supported by hosting providers</span>
               </li>
             </ul>
           </section>
 
-          {/* How we use information */}
+          {/* Access controls */}
           <section>
             <h2 className="mb-4 text-2xl font-semibold text-gray-900">
-              How we use information
+              Access controls
             </h2>
             <ul className="space-y-3 leading-8">
               <li className="flex items-start">
                 <span className="mr-2 text-gray-400">•</span>
-                <span>Provide the service</span>
+                <span>Authentication is required for access</span>
               </li>
               <li className="flex items-start">
                 <span className="mr-2 text-gray-400">•</span>
-                <span>Respond to requests</span>
+                <span>Access is designed on the principle of least privilege</span>
               </li>
               <li className="flex items-start">
                 <span className="mr-2 text-gray-400">•</span>
-                <span>Improve the product</span>
-              </li>
-              <li className="flex items-start">
-                <span className="mr-2 text-gray-400">•</span>
-                <span>Maintain security and reliability</span>
+                <span>Systems are designed for firm isolation between tenants</span>
               </li>
             </ul>
           </section>
 
-          {/* AI and model training */}
+          {/* Document handling */}
           <section>
             <h2 className="mb-4 text-2xl font-semibold text-gray-900">
-              AI and model training
+              Document handling
             </h2>
+            <p className="mb-3 leading-8">
+              We aim to minimise retention of uploaded documents. The target design includes automatic deletion and purge mechanisms.
+            </p>
             <p className="leading-8">
-              Customer documents are not used to train public models.
+              Exact retention periods are disclosed in-product.
             </p>
           </section>
 
-          {/* Data retention */}
+          {/* Operational safeguards */}
           <section>
             <h2 className="mb-4 text-2xl font-semibold text-gray-900">
-              Data retention
+              Operational safeguards
             </h2>
             <ul className="space-y-3 leading-8">
               <li className="flex items-start">
                 <span className="mr-2 text-gray-400">•</span>
-                <span>Contact enquiries are retained as needed to respond</span>
+                <span>Logging and monitoring are in place</span>
               </li>
               <li className="flex items-start">
                 <span className="mr-2 text-gray-400">•</span>
-                <span>For uploaded documents, retention will be minimised and will be clearly disclosed in-product</span>
+                <span>Backups are maintained to support service reliability</span>
               </li>
             </ul>
           </section>
 
-          {/* Sharing */}
+          {/* Vulnerability management */}
           <section>
             <h2 className="mb-4 text-2xl font-semibold text-gray-900">
-              Sharing
+              Vulnerability management
             </h2>
             <p className="leading-8">
-              We do not sell data. We may use service providers for hosting and analytics, only as needed to operate the service.
-            </p>
-          </section>
-
-          {/* Security */}
-          <section>
-            <h2 className="mb-4 text-2xl font-semibold text-gray-900">
-              Security
-            </h2>
-            <p className="leading-8">
-              We use reasonable safeguards to protect your information. For more details, see our{" "}
-              <Link
-                href="/security"
+              We encourage responsible disclosure of security vulnerabilities. Please report security issues to{" "}
+              <a
+                href="mailto:security@dealready.co.nz"
                 className="text-gray-900 underline hover:text-gray-700"
               >
-                security page
-              </Link>
+                security@dealready.co.nz
+              </a>
               .
             </p>
           </section>
 
-          {/* Your choices */}
+          {/* Independent testing */}
           <section>
             <h2 className="mb-4 text-2xl font-semibold text-gray-900">
-              Your choices
+              Independent testing
             </h2>
-            <p className="mb-3 leading-8">
-              You may request access, correction, or deletion of your information. To make a request, please contact us using the details below.
+            <p className="leading-8">
+              Independent security testing and penetration testing will be commissioned as the product matures.
             </p>
           </section>
 
@@ -140,13 +129,20 @@ export default function Privacy() {
               Contact
             </h2>
             <p className="leading-8">
-              For privacy-related enquiries, please contact us at{" "}
+              For security-related enquiries, please contact{" "}
               <a
-                href="mailto:hello@dealready.co.nz"
+                href="mailto:security@dealready.co.nz"
                 className="text-gray-900 underline hover:text-gray-700"
               >
-                hello@dealready.co.nz
+                security@dealready.co.nz
               </a>
+              . For general enquiries, see our{" "}
+              <Link
+                href="/privacy"
+                className="text-gray-900 underline hover:text-gray-700"
+              >
+                privacy page
+              </Link>
               .
             </p>
           </section>
@@ -155,4 +151,3 @@ export default function Privacy() {
     </div>
   );
 }
-

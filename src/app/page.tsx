@@ -618,6 +618,14 @@ export default function Home() {
                     Contact
                   </a>
                 </li>
+                <li>
+                  <Link
+                    href="/admin/login"
+                    className="text-sm text-slate-600 hover:text-slate-900 transition-colors"
+                  >
+                    Admin
+                  </Link>
+                </li>
               </ul>
             </div>
           </div>

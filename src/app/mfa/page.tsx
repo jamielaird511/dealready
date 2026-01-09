@@ -2,12 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { createClient } from "@supabase/supabase-js";
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
+import { supabaseBrowser } from "@/lib/supabaseBrowser";
 
 export default function MFAPage() {
   const router = useRouter();
@@ -33,6 +28,8 @@ export default function MFAPage() {
       setLoading(true);
       setErrorMsg(null);
 
+      const supabase = supabaseBrowser();
+
       const {
         data: { user },
       } = await supabase.auth.getUser();
@@ -56,7 +53,7 @@ export default function MFAPage() {
 
       if (!totp) {
         // They don't have TOTP enrolled yet; push them to security setup
-        router.replace("/settings/security");
+        router.replace("/app/settings/security");
         return;
       }
 
@@ -93,6 +90,8 @@ export default function MFAPage() {
 
     setVerifying(true);
     try {
+      const supabase = supabaseBrowser();
+
       const { error } = await supabase.auth.mfa.verify({
         factorId: factorId!,
         challengeId: challengeId!,
