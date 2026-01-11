@@ -15,6 +15,10 @@ export default function DealPage() {
   const [submissions, setSubmissions] = useState<any[]>([]);
   const [submissionsLoading, setSubmissionsLoading] = useState(true);
   const [creatingSubmission, setCreatingSubmission] = useState(false);
+  const [name, setName] = useState("");
+  const [status, setStatus] = useState("draft");
+  const [saving, setSaving] = useState(false);
+  const [saveMessage, setSaveMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   useEffect(() => {
     async function loadDeal() {
@@ -24,15 +28,29 @@ export default function DealPage() {
         .from("deals")
         .select("*")
         .eq("id", dealId)
-        .single();
+        .maybeSingle();
 
       if (fetchError) {
-        setError(fetchError.message);
+        console.error("Error loading deal:", {
+          message: fetchError.message,
+          details: fetchError.details,
+          hint: fetchError.hint,
+          code: fetchError.code,
+        });
+        setError("Failed to load deal");
+        setLoading(false);
+        return;
+      }
+
+      if (!data) {
+        setError("not_found");
         setLoading(false);
         return;
       }
 
       setDeal(data);
+      setName(data.name || "");
+      setStatus(data.status || "draft");
       setLoading(false);
     }
 
@@ -72,6 +90,57 @@ export default function DealPage() {
       loadSubmissions();
     }
   }, [dealId, loading]);
+
+  async function handleSave() {
+    if (!deal) return;
+
+    setSaving(true);
+    setSaveMessage(null);
+    const supabase = supabaseBrowser();
+
+    try {
+      // Get signed-in user
+      const { data: { user }, error: userError } = await supabase.auth.getUser();
+      if (userError || !user) {
+        setSaveMessage({ type: "error", text: "Not authenticated. Please sign in again." });
+        setSaving(false);
+        return;
+      }
+
+      // Update deal (RLS will ensure only the broker can update their own deals)
+      const { data: updatedDeal, error: updateError } = await supabase
+        .from("deals")
+        .update({
+          name: name.trim() || "New Deal",
+          status: status,
+        })
+        .eq("id", dealId)
+        .eq("broker_id", user.id) // Extra safety: ensure it's the broker's deal
+        .select()
+        .single();
+
+      if (updateError) {
+        console.error("Error updating deal:", {
+          message: updateError.message,
+          details: updateError.details,
+          hint: updateError.hint,
+          code: updateError.code,
+        });
+        setSaveMessage({ type: "error", text: `Error saving deal: ${updateError.message}` });
+        setSaving(false);
+        return;
+      }
+
+      setDeal(updatedDeal);
+      setSaveMessage({ type: "success", text: "Deal saved successfully." });
+      setTimeout(() => setSaveMessage(null), 3000);
+      setSaving(false);
+    } catch (err) {
+      console.error("Error:", err);
+      setSaveMessage({ type: "error", text: "An unexpected error occurred." });
+      setSaving(false);
+    }
+  }
 
   async function createSubmission() {
     setCreatingSubmission(true);
@@ -150,22 +219,73 @@ export default function DealPage() {
   }
 
   if (error) {
+    if (error === "not_found") {
+      return (
+        <main style={{ maxWidth: 900, margin: "40px auto", padding: 16 }}>
+          <div
+            style={{
+              border: "1px solid rgba(0,0,0,0.2)",
+              borderRadius: 10,
+              padding: 40,
+              background: "white",
+              textAlign: "center",
+            }}
+          >
+            <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 12 }}>
+              Deal not found
+            </h2>
+            <p style={{ color: "#6b7280", marginBottom: 24 }}>
+              This deal may not exist or you may not have permission to view it.
+            </p>
+            <button
+              onClick={() => router.push("/app")}
+              style={{
+                padding: "10px 20px",
+                borderRadius: 8,
+                border: "1px solid rgba(0,0,0,0.2)",
+                cursor: "pointer",
+                fontWeight: 600,
+                background: "white",
+              }}
+            >
+              Back to Dashboard
+            </button>
+          </div>
+        </main>
+      );
+    }
+
     return (
       <main style={{ maxWidth: 900, margin: "40px auto", padding: 16 }}>
-        <p style={{ color: "crimson" }}>Error: {error}</p>
-        <button
-          onClick={() => router.push("/app")}
+        <div
           style={{
-            marginTop: 16,
-            padding: "10px 14px",
-            borderRadius: 10,
             border: "1px solid rgba(0,0,0,0.2)",
-            cursor: "pointer",
-            fontWeight: 600,
+            borderRadius: 10,
+            padding: 40,
+            background: "white",
+            textAlign: "center",
           }}
         >
-          Back to App
-        </button>
+          <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 12 }}>
+            Unable to load deal
+          </h2>
+          <p style={{ color: "#6b7280", marginBottom: 24 }}>
+            Please try again later.
+          </p>
+          <button
+            onClick={() => router.push("/app")}
+            style={{
+              padding: "10px 20px",
+              borderRadius: 8,
+              border: "1px solid rgba(0,0,0,0.2)",
+              cursor: "pointer",
+              fontWeight: 600,
+              background: "white",
+            }}
+          >
+            Back to Dashboard
+          </button>
+        </div>
       </main>
     );
   }
@@ -186,16 +306,7 @@ export default function DealPage() {
         >
           ← Back
         </button>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
-          <div>
-            <h1 style={{ fontSize: 28, fontWeight: 800, marginBottom: 8 }}>{deal?.name || "Deal"}</h1>
-            {deal?.status && (
-              <p style={{ opacity: 0.8, marginBottom: 0 }}>
-                Status: {deal.status}
-              </p>
-            )}
-          </div>
-        </div>
+        <h1 style={{ fontSize: 28, fontWeight: 800, marginBottom: 24 }}>Edit Deal</h1>
       </div>
 
       {/* Submissions Section */}
@@ -271,7 +382,7 @@ export default function DealPage() {
         )}
       </div>
 
-      {/* Deal Details (existing) */}
+      {/* Deal Form */}
       {deal && (
         <div
           style={{
@@ -279,12 +390,109 @@ export default function DealPage() {
             borderRadius: 10,
             padding: 20,
             background: "white",
+            marginBottom: 24,
           }}
         >
-          <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 12 }}>Deal Details</h3>
-          <pre style={{ fontSize: 14, overflow: "auto" }}>
-            {JSON.stringify(deal, null, 2)}
-          </pre>
+          <h3 style={{ fontSize: 18, fontWeight: 700, marginBottom: 20 }}>Deal Information</h3>
+          
+          {saveMessage && (
+            <div
+              style={{
+                marginBottom: 16,
+                padding: 12,
+                borderRadius: 8,
+                background: saveMessage.type === "success" ? "rgba(0,128,0,0.08)" : "rgba(220,20,60,0.08)",
+                color: saveMessage.type === "success" ? "green" : "crimson",
+                border: saveMessage.type === "success"
+                  ? "1px solid rgba(0,128,0,0.2)"
+                  : "1px solid rgba(220,20,60,0.2)",
+              }}
+            >
+              {saveMessage.text}
+            </div>
+          )}
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            <div>
+              <label
+                style={{
+                  display: "block",
+                  fontSize: 14,
+                  fontWeight: 600,
+                  marginBottom: 8,
+                  color: "#374151",
+                }}
+              >
+                Deal Name
+              </label>
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Enter deal name"
+                style={{
+                  width: "100%",
+                  padding: "10px 12px",
+                  fontSize: 14,
+                  border: "1px solid rgba(0,0,0,0.2)",
+                  borderRadius: 8,
+                  outline: "none",
+                }}
+              />
+            </div>
+
+            <div>
+              <label
+                style={{
+                  display: "block",
+                  fontSize: 14,
+                  fontWeight: 600,
+                  marginBottom: 8,
+                  color: "#374151",
+                }}
+              >
+                Status
+              </label>
+              <select
+                value={status}
+                onChange={(e) => setStatus(e.target.value)}
+                style={{
+                  width: "100%",
+                  padding: "10px 12px",
+                  fontSize: 14,
+                  border: "1px solid rgba(0,0,0,0.2)",
+                  borderRadius: 8,
+                  outline: "none",
+                  background: "white",
+                }}
+              >
+                <option value="draft">Draft</option>
+                <option value="active">Active</option>
+                <option value="pending">Pending</option>
+                <option value="closed">Closed</option>
+              </select>
+            </div>
+
+            <div>
+              <button
+                onClick={handleSave}
+                disabled={saving}
+                style={{
+                  padding: "10px 20px",
+                  fontSize: 14,
+                  fontWeight: 600,
+                  borderRadius: 8,
+                  border: "1px solid rgba(0,0,0,0.2)",
+                  background: "#10b981",
+                  color: "white",
+                  cursor: saving ? "not-allowed" : "pointer",
+                  opacity: saving ? 0.6 : 1,
+                }}
+              >
+                {saving ? "Saving..." : "Save"}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </main>
