@@ -113,11 +113,11 @@ export default function DealPage() {
         .update({
           name: name.trim() || "New Deal",
           status: status,
+          updated_at: new Date().toISOString(),
         })
         .eq("id", dealId)
-        .eq("broker_id", user.id) // Extra safety: ensure it's the broker's deal
         .select()
-        .single();
+        .maybeSingle();
 
       if (updateError) {
         console.error("Error updating deal:", {
@@ -126,13 +126,21 @@ export default function DealPage() {
           hint: updateError.hint,
           code: updateError.code,
         });
-        setSaveMessage({ type: "error", text: `Error saving deal: ${updateError.message}` });
+        setSaveMessage({ type: "error", text: "Failed to save deal. Please try again." });
+        setSaving(false);
+        return;
+      }
+
+      if (!updatedDeal) {
+        setSaveMessage({ type: "error", text: "Deal not found or access denied." });
         setSaving(false);
         return;
       }
 
       setDeal(updatedDeal);
-      setSaveMessage({ type: "success", text: "Deal saved successfully." });
+      setName(updatedDeal.name || "");
+      setStatus(updatedDeal.status || "draft");
+      setSaveMessage({ type: "success", text: "Saved" });
       setTimeout(() => setSaveMessage(null), 3000);
       setSaving(false);
     } catch (err) {
@@ -467,9 +475,8 @@ export default function DealPage() {
                 }}
               >
                 <option value="draft">Draft</option>
-                <option value="active">Active</option>
-                <option value="pending">Pending</option>
-                <option value="closed">Closed</option>
+                <option value="ready">Ready</option>
+                <option value="submitted">Submitted</option>
               </select>
             </div>
 
