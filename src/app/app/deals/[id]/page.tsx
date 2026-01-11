@@ -228,11 +228,7 @@ export default function DealPage() {
               <div
                 key={submission.id}
                 onClick={() => {
-                  // Try to route to submission page if it exists
-                  router.push(`/app/submissions/${submission.id}`).catch(() => {
-                    // If route doesn't exist, just show the id
-                    console.log("Submission ID:", submission.id);
-                  });
+                  router.push(`/app/submissions/${submission.id}`);
                 }}
                 style={{
                   border: "1px solid rgba(0,0,0,0.2)",
