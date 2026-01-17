@@ -817,6 +817,15 @@ export default function DealPage() {
 
   const hasFiles = files.length > 0;
 
+  // Helper function to get party roles with legacy fallback
+  function getPartyRoles(party: any): string[] {
+    return party.roles ?? (party.role ? [party.role] : []);
+  }
+
+  // Compute borrower/guarantor readiness from deal parties
+  const hasBorrower = dealParties.some(p => getPartyRoles(p).includes("borrower"));
+  const hasGuarantor = dealParties.some(p => getPartyRoles(p).includes("guarantor"));
+
   return (
     <main style={{ maxWidth: 1200, margin: "40px auto", padding: 16 }}>
       {/* Header with Run DealSense button */}
@@ -840,29 +849,43 @@ export default function DealPage() {
         <div style={{ textAlign: "right" }}>
           <button
             onClick={() => {
+              if (!hasBorrower) {
+                alert("Add at least one borrower (person or entity) to run DealSense.");
+                return;
+              }
               if (!hasFiles) {
                 alert("Please upload files before running DealSense checks.");
               } else {
                 alert("DealSense checks coming soon.");
               }
             }}
-            disabled={!hasFiles}
+            disabled={!hasFiles || !hasBorrower}
             style={{
               padding: "10px 20px",
               fontSize: 14,
               fontWeight: 600,
               borderRadius: 8,
               border: "1px solid rgba(0,0,0,0.2)",
-              background: hasFiles ? "#10b981" : "#e5e7eb",
-              color: hasFiles ? "white" : "#9ca3af",
-              cursor: hasFiles ? "pointer" : "not-allowed",
-              opacity: hasFiles ? 1 : 0.6,
+              background: hasFiles && hasBorrower ? "#10b981" : "#e5e7eb",
+              color: hasFiles && hasBorrower ? "white" : "#9ca3af",
+              cursor: hasFiles && hasBorrower ? "pointer" : "not-allowed",
+              opacity: hasFiles && hasBorrower ? 1 : 0.6,
             }}
           >
-            Run DealSense
+            {!hasBorrower ? "Add a borrower to run DealSense" : "Run DealSense"}
           </button>
-          {!hasFiles && (
-            <p style={{ fontSize: 12, color: "#6b7280", marginTop: 8, marginBottom: 0 }}>
+          {!hasBorrower && (
+            <p style={{ fontSize: 12, color: "#dc2626", marginTop: 8, marginBottom: 0 }}>
+              Add at least one borrower (person or entity) to run DealSense.
+            </p>
+          )}
+          {hasBorrower && !hasGuarantor && (
+            <p style={{ fontSize: 12, color: "#d97706", marginTop: 8, marginBottom: 0 }}>
+              No guarantors added. DealSense may miss guarantee-related requirements.
+            </p>
+          )}
+          {hasBorrower && !hasFiles && (
+            <p style={{ fontSize: 12, color: "#6b7280", marginTop: hasGuarantor ? 4 : 8, marginBottom: 0 }}>
               Upload at least one file to run DealSense
             </p>
           )}
