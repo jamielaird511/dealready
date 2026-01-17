@@ -131,10 +131,21 @@ export default function DealPage() {
   
   // Add party form state
   const [newCustomerName, setNewCustomerName] = useState("");
-  const [newCustomerRole, setNewCustomerRole] = useState("borrower");
+  const [newCustomerRoles, setNewCustomerRoles] = useState<string[]>(["borrower"]);
   const [newEntityName, setNewEntityName] = useState("");
-  const [newEntityRole, setNewEntityRole] = useState("borrower");
+  const [newEntityRoles, setNewEntityRoles] = useState<string[]>(["borrower"]);
   const [addingParty, setAddingParty] = useState(false);
+  
+  // Canonical role values
+  const availableRoles = [
+    { value: "borrower", label: "Borrower" },
+    { value: "guarantor", label: "Guarantor" },
+    { value: "director", label: "Director" },
+    { value: "shareholder", label: "Shareholder" },
+    { value: "trustee", label: "Trustee" },
+    { value: "beneficialOwner", label: "Beneficial Owner" },
+    { value: "contact", label: "Contact" },
+  ];
   
   const [notes, setNotes] = useState("");
   
@@ -280,9 +291,26 @@ export default function DealPage() {
 
       const supabase = supabaseBrowser();
 
+      // Query with join to entities, fallback to legacy columns if entity is missing
       const { data, error } = await supabase
         .from("deal_parties")
-        .select("*")
+        .select(`
+          id,
+          deal_id,
+          roles,
+          notes,
+          entity_id,
+          entities:entity_id (
+            id,
+            entity_type,
+            display_name,
+            email,
+            phone
+          ),
+          type,
+          name,
+          role
+        `)
         .eq("deal_id", dealId)
         .order("created_at", { ascending: true });
 
@@ -292,7 +320,29 @@ export default function DealPage() {
         return;
       }
 
-      setDealParties(data || []);
+      // Transform data to normalize structure with legacy fallback
+      // TODO: Remove legacy fallback once all rows are migrated
+      const normalized = (data || []).map((party: any) => {
+        // Supabase returns entities as an array when using join syntax, get first element
+        const entity = Array.isArray(party.entities) ? party.entities[0] : party.entities;
+        return {
+          id: party.id,
+          deal_id: party.deal_id,
+          roles: party.roles || (party.role ? [party.role] : []),
+          notes: party.notes,
+          entityId: entity?.id || null,
+          entity_type: entity?.entity_type || party.type,
+          display_name: entity?.display_name || party.name,
+          email: entity?.email || null,
+          phone: entity?.phone || null,
+          // Legacy fields for backward compatibility during transition
+          type: entity?.entity_type || party.type,
+          name: entity?.display_name || party.name,
+          role: party.roles?.[0] || party.role || null,
+        };
+      });
+
+      setDealParties(normalized);
       setPartiesLoading(false);
     }
 
@@ -358,6 +408,67 @@ export default function DealPage() {
       setSaveMessage({ type: "error", text: "An unexpected error occurred." });
       setSaving(false);
     }
+  }
+
+  // Delete deal party (unlink from deal, but keep entity)
+  async function handleDeleteParty(partyId: string) {
+    const supabase = supabaseBrowser();
+    
+    // Delete the deal_parties row (this unlinks the party from the deal but keeps the entity)
+    const { error } = await supabase
+      .from("deal_parties")
+      .delete()
+      .eq("id", partyId);
+    
+    if (error) {
+      console.error("Error deleting party:", error);
+      alert("Error deleting party. Please try again.");
+      return;
+    }
+    
+    // Update UI by removing the deleted party
+    setDealParties(dealParties.filter(p => p.id !== partyId));
+  }
+
+  // Helper function to upsert entity and get entity_id
+  async function upsertEntity(
+    organizationId: string,
+    entityType: "person" | "company" | "trust" | "other",
+    displayName: string
+  ): Promise<string | null> {
+    const supabase = supabaseBrowser();
+    
+    // Try to find existing entity
+    const { data: existing } = await supabase
+      .from("entities")
+      .select("id")
+      .eq("organization_id", organizationId)
+      .eq("entity_type", entityType)
+      .ilike("display_name", displayName)
+      .maybeSingle();
+    
+    if (existing?.id) {
+      return existing.id;
+    }
+    
+    // Create new entity
+    const { data: newEntity, error } = await supabase
+      .from("entities")
+      .insert({
+        organization_id: organizationId,
+        entity_type: entityType,
+        display_name: displayName,
+        legal_name: displayName,
+      })
+      .select("id")
+      .single();
+    
+    if (error || !newEntity) {
+      console.error("Error creating entity:", error);
+      return null;
+    }
+    
+    return newEntity.id;
   }
 
   function handleFileSelectButton() {
@@ -818,89 +929,230 @@ export default function DealPage() {
 
           {/* Customers Section */}
           <div style={{ marginBottom: 24 }}>
-            <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 12 }}>Customers</h3>
-            {partiesLoading ? (
-              <p style={{ fontSize: 14, opacity: 0.6 }}>Loading...</p>
-            ) : (
-              <>
-                {dealParties.filter(p => p.type === "person").length === 0 ? (
-                  <p style={{ fontSize: 14, opacity: 0.6, marginBottom: 12 }}>No customers added yet.</p>
-                ) : (
-                  <div style={{ marginBottom: 12, display: "flex", flexDirection: "column", gap: 8 }}>
-                    {dealParties.filter(p => p.type === "person").map((party) => (
-                      <div key={party.id} style={{ fontSize: 14, padding: "8px 12px", background: "#f9fafb", borderRadius: 6 }}>
-                        <span style={{ fontWeight: 600 }}>{party.name}</span>
-                        {party.role && (
-                          <span style={{ opacity: 0.7, marginLeft: 8 }}>({party.role})</span>
+            <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 16 }}>Customers</h3>
+            
+            {/* Customers List Card */}
+            <div
+              style={{
+                border: "1px solid rgba(0,0,0,0.2)",
+                borderRadius: 10,
+                padding: 20,
+                background: "white",
+                marginBottom: 16,
+              }}
+            >
+              <h4 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12, color: "#374151" }}>Added Customers</h4>
+              {partiesLoading ? (
+                <p style={{ fontSize: 14, opacity: 0.6 }}>Loading...</p>
+              ) : dealParties.filter(p => p.type === "person").length === 0 ? (
+                <p style={{ fontSize: 14, opacity: 0.6 }}>No customers added yet.</p>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {dealParties.filter(p => p.type === "person").map((party) => (
+                    <div key={party.id} style={{ fontSize: 14, padding: "8px 12px", background: "#f9fafb", borderRadius: 6, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                        <span style={{ fontWeight: 600 }}>{party.display_name || party.name}</span>
+                        {party.roles && party.roles.length > 0 && (
+                          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                            {party.roles.map((r: string) => {
+                              const roleLabel = availableRoles.find(ar => ar.value === r)?.label || r;
+                              return (
+                                <span
+                                  key={r}
+                                  style={{
+                                    fontSize: 11,
+                                    fontWeight: 500,
+                                    padding: "2px 6px",
+                                    borderRadius: 4,
+                                    background: "#e5e7eb",
+                                    color: "#374151",
+                                  }}
+                                >
+                                  {roleLabel}
+                                </span>
+                              );
+                            })}
+                          </div>
                         )}
                       </div>
+                      <button
+                        onClick={() => handleDeleteParty(party.id)}
+                        style={{
+                          padding: "4px 8px",
+                          fontSize: 12,
+                          fontWeight: 600,
+                          borderRadius: 6,
+                          border: "1px solid #dc2626",
+                          background: "#fee2e2",
+                          color: "#991b1b",
+                          cursor: "pointer",
+                        }}
+                        title={`Remove ${party.display_name || party.name} from deal`}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Add Customer Form Card */}
+            <div
+              style={{
+                border: "1px solid rgba(0,0,0,0.2)",
+                borderRadius: 10,
+                padding: 20,
+                background: "white",
+              }}
+            >
+              <h4 style={{ fontSize: 14, fontWeight: 600, marginBottom: 16, color: "#374151" }}>Add Customer</h4>
+              <div>
+                <div style={{ marginBottom: 12 }}>
+                  <input
+                    type="text"
+                    value={newCustomerName}
+                    onChange={(e) => setNewCustomerName(e.target.value)}
+                    placeholder="Customer name"
+                    style={{
+                      width: "100%",
+                      padding: "8px 12px",
+                      fontSize: 14,
+                      border: "1px solid rgba(0,0,0,0.2)",
+                      borderRadius: 8,
+                      outline: "none",
+                    }}
+                  />
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, color: "#374151" }}>Roles</div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                    {availableRoles.map((role) => (
+                      <label
+                        key={role.value}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 4,
+                          fontSize: 13,
+                          cursor: "pointer",
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={newCustomerRoles.includes(role.value)}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setNewCustomerRoles([...newCustomerRoles, role.value]);
+                            } else {
+                              setNewCustomerRoles(newCustomerRoles.filter(r => r !== role.value));
+                            }
+                          }}
+                          style={{ cursor: "pointer" }}
+                        />
+                        <span>{role.label}</span>
+                      </label>
                     ))}
                   </div>
-                )}
-                <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
-                  <div style={{ flex: 1 }}>
-                    <input
-                      type="text"
-                      value={newCustomerName}
-                      onChange={(e) => setNewCustomerName(e.target.value)}
-                      placeholder="Customer name"
-                      style={{
-                        width: "100%",
-                        padding: "8px 12px",
-                        fontSize: 14,
-                        border: "1px solid rgba(0,0,0,0.2)",
-                        borderRadius: 8,
-                        outline: "none",
-                      }}
-                    />
-                  </div>
-                  <div style={{ width: 150 }}>
-                    <select
-                      value={newCustomerRole}
-                      onChange={(e) => setNewCustomerRole(e.target.value)}
-                      style={{
-                        width: "100%",
-                        padding: "8px 12px",
-                        fontSize: 14,
-                        border: "1px solid rgba(0,0,0,0.2)",
-                        borderRadius: 8,
-                        outline: "none",
-                        background: "white",
-                      }}
-                    >
-                      <option value="borrower">Borrower</option>
-                      <option value="guarantor">Guarantor</option>
-                      <option value="director">Director</option>
-                      <option value="shareholder">Shareholder</option>
-                      <option value="other">Other</option>
-                    </select>
-                  </div>
+                </div>
+                <div style={{ marginTop: 12 }}>
                   <button
                     onClick={async () => {
-                      if (!newCustomerName.trim() || addingParty) return;
+                      if (!newCustomerName.trim() || addingParty || newCustomerRoles.length === 0) return;
                       setAddingParty(true);
                       const supabase = supabaseBrowser();
-                      const { data, error } = await supabase
-                        .from("deal_parties")
-                        .insert({
-                          deal_id: dealId,
-                          type: "person",
-                          name: newCustomerName.trim(),
-                          role: newCustomerRole,
-                        })
-                        .select()
-                        .single();
-                      if (error) {
-                        console.error("Error adding customer:", error);
-                        alert("Error adding customer. Please try again.");
-                      } else {
-                        setDealParties([...dealParties, data]);
-                        setNewCustomerName("");
-                        setNewCustomerRole("borrower");
+                      
+                      try {
+                        // Get organization_id
+                        const { data: { user } } = await supabase.auth.getUser();
+                        if (!user) {
+                          alert("Not authenticated. Please refresh and try again.");
+                          setAddingParty(false);
+                          return;
+                        }
+                        
+                        const { data: orgMember } = await supabase
+                          .from("organization_members")
+                          .select("organization_id")
+                          .eq("user_id", user.id)
+                          .maybeSingle();
+                        
+                        if (!orgMember?.organization_id) {
+                          alert("Error: Could not find organization. Please contact support.");
+                          setAddingParty(false);
+                          return;
+                        }
+                        
+                        // Upsert entity
+                        const entityId = await upsertEntity(orgMember.organization_id, "person", newCustomerName.trim());
+                        if (!entityId) {
+                          alert("Error creating entity. Please try again.");
+                          setAddingParty(false);
+                          return;
+                        }
+                        
+                        // Insert deal_parties with entity_id and roles
+                        const { data, error } = await supabase
+                          .from("deal_parties")
+                          .insert({
+                            deal_id: dealId,
+                            entity_id: entityId,
+                            roles: newCustomerRoles,
+                            // Legacy columns for backward compatibility
+                            type: "person",
+                            name: newCustomerName.trim(),
+                            role: newCustomerRoles[0] || null,
+                          })
+                          .select(`
+                            id,
+                            deal_id,
+                            roles,
+                            notes,
+                            entity_id,
+                            entities:entity_id (
+                              id,
+                              entity_type,
+                              display_name,
+                              email,
+                              phone
+                            ),
+                            type,
+                            name,
+                            role
+                          `)
+                          .single();
+                        
+                        if (error) {
+                          console.error("Error adding customer:", error);
+                          alert("Error adding customer. Please try again.");
+                        } else {
+                          // Normalize the response
+                          const entity = Array.isArray(data.entities) ? data.entities[0] : data.entities;
+                          const normalized = {
+                            id: data.id,
+                            deal_id: data.deal_id,
+                            roles: data.roles || [],
+                            notes: data.notes,
+                            entityId: entity?.id || null,
+                            entity_type: entity?.entity_type || data.type,
+                            display_name: entity?.display_name || data.name,
+                            email: entity?.email || null,
+                            phone: entity?.phone || null,
+                            type: entity?.entity_type || data.type,
+                            name: entity?.display_name || data.name,
+                            role: data.roles?.[0] || data.role || null,
+                          };
+                          setDealParties([...dealParties, normalized]);
+                          setNewCustomerName("");
+                          setNewCustomerRoles([]);
+                        }
+                      } catch (err) {
+                        console.error("Error:", err);
+                        alert("An unexpected error occurred.");
                       }
                       setAddingParty(false);
                     }}
-                    disabled={!newCustomerName.trim() || addingParty}
+                    disabled={!newCustomerName.trim() || addingParty || newCustomerRoles.length === 0}
                     style={{
                       padding: "8px 16px",
                       fontSize: 14,
@@ -909,102 +1161,243 @@ export default function DealPage() {
                       border: "1px solid rgba(0,0,0,0.2)",
                       background: "#10b981",
                       color: "white",
-                      cursor: !newCustomerName.trim() || addingParty ? "not-allowed" : "pointer",
-                      opacity: !newCustomerName.trim() || addingParty ? 0.6 : 1,
+                      cursor: !newCustomerName.trim() || addingParty || newCustomerRoles.length === 0 ? "not-allowed" : "pointer",
+                      opacity: !newCustomerName.trim() || addingParty || newCustomerRoles.length === 0 ? 0.6 : 1,
                     }}
                   >
                     Add
                   </button>
                 </div>
-              </>
-            )}
+              </div>
+            </div>
           </div>
 
           {/* Entities Section */}
           <div style={{ marginBottom: 24 }}>
-            <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 12 }}>Entities</h3>
-            {partiesLoading ? (
-              <p style={{ fontSize: 14, opacity: 0.6 }}>Loading...</p>
-            ) : (
-              <>
-                {dealParties.filter(p => p.type === "entity").length === 0 ? (
-                  <p style={{ fontSize: 14, opacity: 0.6, marginBottom: 12 }}>No entities added yet.</p>
-                ) : (
-                  <div style={{ marginBottom: 12, display: "flex", flexDirection: "column", gap: 8 }}>
-                    {dealParties.filter(p => p.type === "entity").map((party) => (
-                      <div key={party.id} style={{ fontSize: 14, padding: "8px 12px", background: "#f9fafb", borderRadius: 6 }}>
-                        <span style={{ fontWeight: 600 }}>{party.name}</span>
-                        {party.role && (
-                          <span style={{ opacity: 0.7, marginLeft: 8 }}>({party.role})</span>
+            <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 16 }}>Entities</h3>
+            
+            {/* Entities List Card */}
+            <div
+              style={{
+                border: "1px solid rgba(0,0,0,0.2)",
+                borderRadius: 10,
+                padding: 20,
+                background: "white",
+                marginBottom: 16,
+              }}
+            >
+              <h4 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12, color: "#374151" }}>Added Entities</h4>
+              {partiesLoading ? (
+                <p style={{ fontSize: 14, opacity: 0.6 }}>Loading...</p>
+              ) : dealParties.filter(p => p.type === "entity" || p.entity_type === "company" || p.entity_type === "trust" || p.entity_type === "other").length === 0 ? (
+                <p style={{ fontSize: 14, opacity: 0.6 }}>No entities added yet.</p>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {dealParties.filter(p => p.type === "entity" || p.entity_type === "company" || p.entity_type === "trust" || p.entity_type === "other").map((party) => (
+                    <div key={party.id} style={{ fontSize: 14, padding: "8px 12px", background: "#f9fafb", borderRadius: 6, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                        <span style={{ fontWeight: 600 }}>{party.display_name || party.name}</span>
+                        {party.roles && party.roles.length > 0 && (
+                          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                            {party.roles.map((r: string) => {
+                              const roleLabel = availableRoles.find(ar => ar.value === r)?.label || r;
+                              return (
+                                <span
+                                  key={r}
+                                  style={{
+                                    fontSize: 11,
+                                    fontWeight: 500,
+                                    padding: "2px 6px",
+                                    borderRadius: 4,
+                                    background: "#e5e7eb",
+                                    color: "#374151",
+                                  }}
+                                >
+                                  {roleLabel}
+                                </span>
+                              );
+                            })}
+                          </div>
                         )}
                       </div>
+                      <button
+                        onClick={() => handleDeleteParty(party.id)}
+                        style={{
+                          padding: "4px 8px",
+                          fontSize: 12,
+                          fontWeight: 600,
+                          borderRadius: 6,
+                          border: "1px solid #dc2626",
+                          background: "#fee2e2",
+                          color: "#991b1b",
+                          cursor: "pointer",
+                        }}
+                        title={`Remove ${party.display_name || party.name} from deal`}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Add Entity Form Card */}
+            <div
+              style={{
+                border: "1px solid rgba(0,0,0,0.2)",
+                borderRadius: 10,
+                padding: 20,
+                background: "white",
+              }}
+            >
+              <h4 style={{ fontSize: 14, fontWeight: 600, marginBottom: 16, color: "#374151" }}>Add Entity</h4>
+              <div>
+                <div style={{ marginBottom: 12 }}>
+                  <input
+                    type="text"
+                    value={newEntityName}
+                    onChange={(e) => setNewEntityName(e.target.value)}
+                    placeholder="Entity name"
+                    style={{
+                      width: "100%",
+                      padding: "8px 12px",
+                      fontSize: 14,
+                      border: "1px solid rgba(0,0,0,0.2)",
+                      borderRadius: 8,
+                      outline: "none",
+                    }}
+                  />
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, color: "#374151" }}>Roles</div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                    {availableRoles.map((role) => (
+                      <label
+                        key={role.value}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 4,
+                          fontSize: 13,
+                          cursor: "pointer",
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={newEntityRoles.includes(role.value)}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setNewEntityRoles([...newEntityRoles, role.value]);
+                            } else {
+                              setNewEntityRoles(newEntityRoles.filter(r => r !== role.value));
+                            }
+                          }}
+                          style={{ cursor: "pointer" }}
+                        />
+                        <span>{role.label}</span>
+                      </label>
                     ))}
                   </div>
-                )}
-                <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
-                  <div style={{ flex: 1 }}>
-                    <input
-                      type="text"
-                      value={newEntityName}
-                      onChange={(e) => setNewEntityName(e.target.value)}
-                      placeholder="Entity name"
-                      style={{
-                        width: "100%",
-                        padding: "8px 12px",
-                        fontSize: 14,
-                        border: "1px solid rgba(0,0,0,0.2)",
-                        borderRadius: 8,
-                        outline: "none",
-                      }}
-                    />
-                  </div>
-                  <div style={{ width: 150 }}>
-                    <select
-                      value={newEntityRole}
-                      onChange={(e) => setNewEntityRole(e.target.value)}
-                      style={{
-                        width: "100%",
-                        padding: "8px 12px",
-                        fontSize: 14,
-                        border: "1px solid rgba(0,0,0,0.2)",
-                        borderRadius: 8,
-                        outline: "none",
-                        background: "white",
-                      }}
-                    >
-                      <option value="borrower">Borrower</option>
-                      <option value="guarantor">Guarantor</option>
-                      <option value="director">Director</option>
-                      <option value="shareholder">Shareholder</option>
-                      <option value="other">Other</option>
-                    </select>
-                  </div>
+                </div>
+                <div style={{ marginTop: 12 }}>
                   <button
                     onClick={async () => {
-                      if (!newEntityName.trim() || addingParty) return;
+                      if (!newEntityName.trim() || addingParty || newEntityRoles.length === 0) return;
                       setAddingParty(true);
                       const supabase = supabaseBrowser();
-                      const { data, error } = await supabase
-                        .from("deal_parties")
-                        .insert({
-                          deal_id: dealId,
-                          type: "entity",
-                          name: newEntityName.trim(),
-                          role: newEntityRole,
-                        })
-                        .select()
-                        .single();
-                      if (error) {
-                        console.error("Error adding entity:", error);
-                        alert("Error adding entity. Please try again.");
-                      } else {
-                        setDealParties([...dealParties, data]);
-                        setNewEntityName("");
-                        setNewEntityRole("borrower");
+                      
+                      try {
+                        // Get organization_id
+                        const { data: { user } } = await supabase.auth.getUser();
+                        if (!user) {
+                          alert("Not authenticated. Please refresh and try again.");
+                          setAddingParty(false);
+                          return;
+                        }
+                        
+                        const { data: orgMember } = await supabase
+                          .from("organization_members")
+                          .select("organization_id")
+                          .eq("user_id", user.id)
+                          .maybeSingle();
+                        
+                        if (!orgMember?.organization_id) {
+                          alert("Error: Could not find organization. Please contact support.");
+                          setAddingParty(false);
+                          return;
+                        }
+                        
+                        // Upsert entity (use 'company' as default entity_type for entities section)
+                        const entityId = await upsertEntity(orgMember.organization_id, "company", newEntityName.trim());
+                        if (!entityId) {
+                          alert("Error creating entity. Please try again.");
+                          setAddingParty(false);
+                          return;
+                        }
+                        
+                        // Insert deal_parties with entity_id and roles
+                        const { data, error } = await supabase
+                          .from("deal_parties")
+                          .insert({
+                            deal_id: dealId,
+                            entity_id: entityId,
+                            roles: newEntityRoles,
+                            // Legacy columns for backward compatibility
+                            type: "entity",
+                            name: newEntityName.trim(),
+                            role: newEntityRoles[0] || null,
+                          })
+                          .select(`
+                            id,
+                            deal_id,
+                            roles,
+                            notes,
+                            entity_id,
+                            entities:entity_id (
+                              id,
+                              entity_type,
+                              display_name,
+                              email,
+                              phone
+                            ),
+                            type,
+                            name,
+                            role
+                          `)
+                          .single();
+                        
+                        if (error) {
+                          console.error("Error adding entity:", error);
+                          alert("Error adding entity. Please try again.");
+                        } else {
+                          // Normalize the response
+                          const entity = Array.isArray(data.entities) ? data.entities[0] : data.entities;
+                          const normalized = {
+                            id: data.id,
+                            deal_id: data.deal_id,
+                            roles: data.roles || [],
+                            notes: data.notes,
+                            entityId: entity?.id || null,
+                            entity_type: entity?.entity_type || data.type,
+                            display_name: entity?.display_name || data.name,
+                            email: entity?.email || null,
+                            phone: entity?.phone || null,
+                            type: entity?.entity_type || data.type,
+                            name: entity?.display_name || data.name,
+                            role: data.roles?.[0] || data.role || null,
+                          };
+                          setDealParties([...dealParties, normalized]);
+                          setNewEntityName("");
+                          setNewEntityRoles([]);
+                        }
+                      } catch (err) {
+                        console.error("Error:", err);
+                        alert("An unexpected error occurred.");
                       }
                       setAddingParty(false);
                     }}
-                    disabled={!newEntityName.trim() || addingParty}
+                    disabled={!newEntityName.trim() || addingParty || newEntityRoles.length === 0}
                     style={{
                       padding: "8px 16px",
                       fontSize: 14,
@@ -1013,15 +1406,15 @@ export default function DealPage() {
                       border: "1px solid rgba(0,0,0,0.2)",
                       background: "#10b981",
                       color: "white",
-                      cursor: !newEntityName.trim() || addingParty ? "not-allowed" : "pointer",
-                      opacity: !newEntityName.trim() || addingParty ? 0.6 : 1,
+                      cursor: !newEntityName.trim() || addingParty || newEntityRoles.length === 0 ? "not-allowed" : "pointer",
+                      opacity: !newEntityName.trim() || addingParty || newEntityRoles.length === 0 ? 0.6 : 1,
                     }}
                   >
                     Add
                   </button>
                 </div>
-              </>
-            )}
+              </div>
+            </div>
           </div>
 
           <div style={{ marginBottom: 16 }}>
