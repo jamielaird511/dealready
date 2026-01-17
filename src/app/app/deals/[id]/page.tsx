@@ -3,10 +3,12 @@
 import { useEffect, useState, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
+import { DeleteFileDialog } from "@/components/DeleteFileDialog";
 
-function FileItem({ file, getDownloadUrl, onDelete }: { file: any; getDownloadUrl: (path: string) => Promise<string | null>; onDelete: (fileId: string) => void }) {
+function FileItem({ file, getDownloadUrl, onDelete }: { file: any; getDownloadUrl: (path: string) => Promise<string | null>; onDelete: (fileId: string) => Promise<void> }) {
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [loadingUrl, setLoadingUrl] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
   async function handleDownload() {
@@ -27,13 +29,17 @@ function FileItem({ file, getDownloadUrl, onDelete }: { file: any; getDownloadUr
     }
   }
 
-  async function handleDelete() {
-    if (!confirm(`Are you sure you want to delete "${file.display_name || file.original_filename}"?`)) {
-      return;
+  async function confirmDelete() {
+    try {
+      setDeleting(true);
+      await onDelete(file.id);
+      setDeleteOpen(false);
+    } catch (err) {
+      console.error("Error deleting file:", err);
+      alert("Delete failed: " + ((err as any)?.message ?? "Unknown error"));
+    } finally {
+      setDeleting(false);
     }
-
-    setDeleting(true);
-    onDelete(file.id);
   }
 
   return (
@@ -75,7 +81,8 @@ function FileItem({ file, getDownloadUrl, onDelete }: { file: any; getDownloadUr
           {loadingUrl ? "Loading..." : "Download"}
         </button>
         <button
-          onClick={handleDelete}
+          type="button"
+          onClick={() => setDeleteOpen(true)}
           disabled={deleting}
           style={{
             padding: "6px 12px",
@@ -88,11 +95,19 @@ function FileItem({ file, getDownloadUrl, onDelete }: { file: any; getDownloadUr
             fontSize: 13,
             opacity: deleting ? 0.6 : 1,
           }}
-          title="Delete file"
+          title={`Delete ${file.display_name || file.original_filename}`}
+          aria-label={`Delete ${file.display_name || file.original_filename}`}
         >
           🗑️
         </button>
       </div>
+      <DeleteFileDialog
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        fileName={file.display_name || file.original_filename}
+        onConfirm={confirmDelete}
+        isDeleting={deleting}
+      />
     </div>
   );
 }
@@ -136,6 +151,7 @@ export default function DealPage() {
   const [displayName, setDisplayName] = useState("");
   const [category, setCategory] = useState("financials");
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [showDetails, setShowDetails] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -518,39 +534,34 @@ export default function DealPage() {
     }
   }
 
-  async function handleDeleteFile(fileId: string) {
+  async function handleDeleteFile(fileId: string): Promise<void> {
     const file = files.find(f => f.id === fileId);
-    if (!file || !activeSubmissionId) return;
+    if (!file || !activeSubmissionId) {
+      throw new Error("File or submission not found");
+    }
 
     setDeleteError(null);
     const supabase = supabaseBrowser();
 
-    try {
-      // Delete from storage
-      const bucketName = "deal-packs";
-      const { error: storageError } = await supabase.storage
-        .from(bucketName)
-        .remove([file.storage_path]);
+    // Optimistically remove from UI
+    setFiles(prev => prev.filter(f => f.id !== fileId));
 
-      if (storageError) {
-        console.error("Error deleting file from storage:", storageError);
-        setDeleteError("Failed to delete file from storage.");
-        return;
-      }
+    // Delete from database first
+    const { data: deletedRow, error: dbError } = await supabase
+      .from("submission_files")
+      .delete()
+      .eq("id", fileId)
+      .select("id")
+      .maybeSingle();
 
-      // Delete from database
-      const { error: dbError } = await supabase
-        .from("submission_files")
-        .delete()
-        .eq("id", fileId);
-
-      if (dbError) {
-        console.error("Error deleting file record:", dbError);
-        setDeleteError("Failed to delete file record.");
-        return;
-      }
-
-      // Refresh files list
+    if (dbError) {
+      console.error("Error deleting file record:", {
+        message: dbError.message,
+        details: dbError.details,
+        hint: dbError.hint,
+        code: dbError.code,
+      });
+      // Rollback: refetch files list
       const { data: refreshedFiles } = await supabase
         .from("submission_files")
         .select("*")
@@ -560,9 +571,40 @@ export default function DealPage() {
       if (refreshedFiles) {
         setFiles(refreshedFiles);
       }
-    } catch (err) {
-      console.error("Error:", err);
-      setDeleteError("An unexpected error occurred.");
+      setDeleteError("Failed to delete file record.");
+      throw new Error(dbError.message || "Failed to delete file record");
+    }
+
+    if (!deletedRow) {
+      // Rollback: refetch files list
+      const { data: refreshedFiles } = await supabase
+        .from("submission_files")
+        .select("*")
+        .eq("submission_id", activeSubmissionId)
+        .order("created_at", { ascending: false });
+
+      if (refreshedFiles) {
+        setFiles(refreshedFiles);
+      }
+      setDeleteError("Delete blocked (no rows deleted). Likely RLS policy.");
+      throw new Error("Delete blocked (no rows deleted). Likely RLS policy.");
+    }
+
+    // Delete from storage (non-critical - if it fails, show warning but don't rollback)
+    const bucketName = "deal-packs";
+    const { error: storageError } = await supabase.storage
+      .from(bucketName)
+      .remove([file.storage_path]);
+
+    if (storageError) {
+      console.error("Error deleting file from storage:", {
+        message: storageError.message,
+        details: (storageError as any).details,
+        hint: (storageError as any).hint,
+        code: (storageError as any).code,
+      });
+      setDeleteError(`Warning: File record deleted but storage cleanup failed: ${storageError.message || "Unknown error"}`);
+      // Don't throw - UI already shows file as deleted
     }
   }
 
@@ -746,65 +788,32 @@ export default function DealPage() {
             </div>
           )}
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
-            <div>
-              <label
-                style={{
-                  display: "block",
-                  fontSize: 14,
-                  fontWeight: 600,
-                  marginBottom: 8,
-                  color: "#374151",
-                }}
-              >
-                Deal Name
-              </label>
-              <input
-                type="text"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="Enter deal name"
-                style={{
-                  width: "100%",
-                  padding: "10px 12px",
-                  fontSize: 14,
-                  border: "1px solid rgba(0,0,0,0.2)",
-                  borderRadius: 8,
-                  outline: "none",
-                }}
-              />
-            </div>
-
-            <div>
-              <label
-                style={{
-                  display: "block",
-                  fontSize: 14,
-                  fontWeight: 600,
-                  marginBottom: 8,
-                  color: "#374151",
-                }}
-              >
-                Status
-              </label>
-              <select
-                value={status}
-                onChange={(e) => setStatus(e.target.value)}
-                style={{
-                  width: "100%",
-                  padding: "10px 12px",
-                  fontSize: 14,
-                  border: "1px solid rgba(0,0,0,0.2)",
-                  borderRadius: 8,
-                  outline: "none",
-                  background: "white",
-                }}
-              >
-                <option value="draft">Draft</option>
-                <option value="ready">Ready</option>
-                <option value="submitted">Submitted</option>
-              </select>
-            </div>
+          <div style={{ marginBottom: 16 }}>
+            <label
+              style={{
+                display: "block",
+                fontSize: 14,
+                fontWeight: 600,
+                marginBottom: 8,
+                color: "#374151",
+              }}
+            >
+              Deal Name
+            </label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Enter deal name"
+              style={{
+                width: "100%",
+                padding: "10px 12px",
+                fontSize: 14,
+                border: "1px solid rgba(0,0,0,0.2)",
+                borderRadius: 8,
+                outline: "none",
+              }}
+            />
           </div>
 
           {/* Customers Section */}
@@ -1092,6 +1101,50 @@ export default function DealPage() {
           >
             Upload File
           </button>
+        </div>
+
+        {/* Collapsible Details Section */}
+        <div style={{ marginBottom: 16 }}>
+          <button
+            onClick={() => setShowDetails(!showDetails)}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "8px 12px",
+              fontSize: 13,
+              fontWeight: 600,
+              color: "#6b7280",
+              background: "transparent",
+              border: "1px solid rgba(0,0,0,0.1)",
+              borderRadius: 6,
+              cursor: "pointer",
+            }}
+          >
+            <span style={{ transform: showDetails ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.2s", display: "inline-block" }}>
+              ▶
+            </span>
+            <span>Details</span>
+          </button>
+          {showDetails && (
+            <div
+              style={{
+                fontSize: 12,
+                background: "#f9fafb",
+                border: "1px solid rgba(0,0,0,0.1)",
+                borderRadius: 8,
+                padding: 12,
+                marginTop: 8,
+              }}
+            >
+              <div style={{ marginBottom: 4 }}>
+                <strong>Deal ID:</strong> <span style={{ fontFamily: "monospace" }}>{dealId}</span>
+              </div>
+              <div>
+                <strong>Submission ID:</strong> <span style={{ fontFamily: "monospace" }}>{activeSubmissionId ?? "—"}</span>
+              </div>
+            </div>
+          )}
         </div>
 
         {filesError && (
