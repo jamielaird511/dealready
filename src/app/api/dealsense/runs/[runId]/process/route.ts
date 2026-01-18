@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/src/lib/supabase/server";
-import { computeFindings } from "@/src/lib/dealsense/runChecks";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { computeFindings } from "@/lib/dealsense/runChecks";
 
 export async function POST(
   req: NextRequest,
