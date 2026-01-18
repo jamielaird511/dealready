@@ -3,12 +3,12 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export async function GET(
   req: NextRequest,
-  ctx: { params: { runId: string } }
+  context: { params: Promise<{ runId: string }> }
 ) {
-  const paramRunId = ctx.params.runId;
+  const { runId } = await context.params;
   let urlRunId: string | undefined;
 
-  if (!paramRunId) {
+  if (!runId) {
     // Fallback: parse from URL pathname
     const pathname = new URL(req.url).pathname;
     const parts = pathname.split("/").filter(Boolean);
@@ -18,16 +18,16 @@ export async function GET(
     }
   }
 
-  const runId = paramRunId || urlRunId;
+  const finalRunId = runId || urlRunId;
 
-  if (!runId) {
-    return NextResponse.json({ error: "Missing runId", runId }, { status: 400 });
+  if (!finalRunId) {
+    return NextResponse.json({ error: "Missing runId", runId: finalRunId }, { status: 400 });
   }
 
   // Validate UUID format
-  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(runId);
+  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(finalRunId);
   if (!isUuid) {
-    return NextResponse.json({ error: "Invalid runId", runId }, { status: 400 });
+    return NextResponse.json({ error: "Invalid runId", runId: finalRunId }, { status: 400 });
   }
 
   try {
@@ -57,7 +57,7 @@ export async function GET(
           org_id
         )
       `)
-      .eq("id", runId)
+      .eq("id", finalRunId)
       .maybeSingle();
 
     if (runError) {
@@ -90,7 +90,7 @@ export async function GET(
     const { data: findings, error: findingsError } = await supabase
       .from("submission_run_findings")
       .select("*")
-      .eq("run_id", runId)
+      .eq("run_id", finalRunId)
       .order("created_at", { ascending: true });
 
     if (findingsError) {

@@ -33,12 +33,13 @@ export async function GET(req: NextRequest) {
 
 export async function POST(
   req: NextRequest,
-  { params }: { params: { runId: string } }
+  context: { params: Promise<{ runId: string }> }
 ) {
-  const paramRunId = params?.runId;
+  const { runId } = await context.params;
   let urlRunId: string | undefined;
 
-  if (!paramRunId) {
+  if (!runId) {
+    // Fallback: parse from URL pathname
     const pathname = new URL(req.url).pathname;
     const parts = pathname.split("/").filter(Boolean);
     const runsIndex = parts.indexOf("runs");
@@ -47,31 +48,31 @@ export async function POST(
     }
   }
 
-  const runId = paramRunId || urlRunId;
+  let finalRunId = runId || urlRunId;
 
   console.log("[DealSense Process API] runId debug", {
-    paramRunId,
+    runIdFromParams: runId,
     urlRunId,
-    runId,
+    finalRunId,
     url: req.url,
   });
 
   // Validate UUID format (basic check)
   console.log("[DealSense Process API] UUID validation debug", {
-    runId,
-    runIdJson: JSON.stringify(runId),
-    len: runId?.length,
-    charCodes: runId?.split("").slice(0, 80).map(c => c.charCodeAt(0))
+    runId: finalRunId,
+    runIdJson: JSON.stringify(finalRunId),
+    len: finalRunId?.length,
+    charCodes: finalRunId?.split("").slice(0, 80).map(c => c.charCodeAt(0))
   });
 
-  const isUuid = !!runId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(runId);
+  const isUuid = !!finalRunId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(finalRunId);
 
-  if (!runId) {
+  if (!finalRunId) {
     return NextResponse.json({ error: "Missing runId", url: req.url }, { status: 400 });
   }
 
   if (!isUuid) {
-    return NextResponse.json({ error: "Invalid runId", runId, runIdJson: JSON.stringify(runId), len: runId?.length }, { status: 400 });
+    return NextResponse.json({ error: "Invalid runId", runId: finalRunId, runIdJson: JSON.stringify(finalRunId), len: finalRunId?.length }, { status: 400 });
   }
 
   try {
@@ -91,7 +92,7 @@ export async function POST(
       .maybeSingle();
 
     if (runError) {
-      console.error("[DealSense Process API] Error loading run:", { runId, error: runError });
+          console.error("[DealSense Process API] Error loading run:", { runId: finalRunId, error: runError });
       return NextResponse.json({ error: "Failed to load run" }, { status: 500 });
     }
 
@@ -135,7 +136,7 @@ export async function POST(
       await supabase
         .from("submission_runs")
         .update({ status: "failed", updated_at: new Date().toISOString() })
-        .eq("id", runId);
+        .eq("id", finalRunId);
       return NextResponse.json({ error: "Failed to load submission" }, { status: 500 });
     }
 
@@ -150,7 +151,7 @@ export async function POST(
       await supabase
         .from("submission_runs")
         .update({ status: "failed", updated_at: new Date().toISOString() })
-        .eq("id", runId);
+        .eq("id", finalRunId);
       return NextResponse.json({ error: "Failed to load files" }, { status: 500 });
     }
 
@@ -171,7 +172,7 @@ export async function POST(
       await supabase
         .from("submission_runs")
         .update({ status: "failed", updated_at: new Date().toISOString() })
-        .eq("id", runId);
+        .eq("id", finalRunId);
       return NextResponse.json({ error: "Failed to load parties" }, { status: 500 });
     }
 
@@ -205,7 +206,7 @@ export async function POST(
     // Insert findings
     if (findings.length > 0) {
       const findingsToInsert = findings.map(f => ({
-        run_id: runId,
+        run_id: finalRunId,
         severity: f.severity,
         category: f.category,
         message: f.message,
@@ -225,7 +226,7 @@ export async function POST(
         await supabase
           .from("submission_runs")
           .update({ status: "failed", updated_at: new Date().toISOString() })
-          .eq("id", runId);
+          .eq("id", finalRunId);
         return NextResponse.json({ error: "Failed to insert findings" }, { status: 500 });
       }
     }
@@ -248,7 +249,7 @@ export async function POST(
       await supabase
         .from("submission_runs")
         .update({ status: "failed", updated_at: new Date().toISOString() })
-        .eq("id", runId);
+        .eq("id", finalRunId);
       return NextResponse.json({ error: "Failed to complete run" }, { status: 500 });
     }
 
@@ -262,7 +263,7 @@ export async function POST(
       await supabase
         .from("submission_runs")
         .update({ status: "failed", updated_at: new Date().toISOString() })
-        .eq("id", runId);
+        .eq("id", finalRunId);
     } catch (updateErr) {
       console.error("[DealSense Process API] Error setting failed status:", updateErr);
     }
