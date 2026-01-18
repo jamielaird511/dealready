@@ -2,31 +2,76 @@ import { NextRequest, NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { computeFindings } from "@/lib/dealsense/runChecks";
 
+export async function GET(req: NextRequest) {
+  try {
+    const supabase = await createSupabaseServerClient();
+
+    // Check authentication
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    // Query recent submission_runs
+    const { data: runs, error } = await supabase
+      .from("submission_runs")
+      .select("id, status, created_at, submission_id")
+      .order("created_at", { ascending: false })
+      .limit(20);
+
+    if (error) {
+      console.error("[DealSense Process API] Error loading runs:", error);
+      return NextResponse.json({ error: "Failed to load runs" }, { status: 500 });
+    }
+
+    return NextResponse.json({ runs: runs || [] });
+  } catch (err) {
+    console.error("[DealSense Process API] Error in GET handler:", err);
+    return NextResponse.json({ error: "An unexpected error occurred" }, { status: 500 });
+  }
+}
+
 export async function POST(
   req: NextRequest,
-  { params }: { params: Promise<{ runId: string }> }
+  { params }: { params: { runId: string } }
 ) {
-  const { runId: paramRunId } = await params;
+  const paramRunId = params?.runId;
   let urlRunId: string | undefined;
-  
+
   if (!paramRunId) {
-    // Fallback: parse from URL pathname
     const pathname = new URL(req.url).pathname;
     const parts = pathname.split("/").filter(Boolean);
     const runsIndex = parts.indexOf("runs");
     if (runsIndex >= 0 && runsIndex + 1 < parts.length) {
       urlRunId = parts[runsIndex + 1];
-      console.log("[DealSense Process API] Using URL fallback for runId:", urlRunId);
     }
   }
-  
+
   const runId = paramRunId || urlRunId;
 
-  // Validate UUID format (basic check)
-  const isUuid = runId && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(runId);
+  console.log("[DealSense Process API] runId debug", {
+    paramRunId,
+    urlRunId,
+    runId,
+    url: req.url,
+  });
 
-  if (!runId || !isUuid) {
-    return NextResponse.json({ error: "Missing runId" }, { status: 400 });
+  // Validate UUID format (basic check)
+  console.log("[DealSense Process API] UUID validation debug", {
+    runId,
+    runIdJson: JSON.stringify(runId),
+    len: runId?.length,
+    charCodes: runId?.split("").slice(0, 80).map(c => c.charCodeAt(0))
+  });
+
+  const isUuid = !!runId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(runId);
+
+  if (!runId) {
+    return NextResponse.json({ error: "Missing runId", url: req.url }, { status: 400 });
+  }
+
+  if (!isUuid) {
+    return NextResponse.json({ error: "Invalid runId", runId, runIdJson: JSON.stringify(runId), len: runId?.length }, { status: 400 });
   }
 
   try {
@@ -144,10 +189,12 @@ export async function POST(
     }));
 
     // Compute findings
-    const findings = computeFindings({
+    const { findings, summary } = computeFindings({
       files: normalizedFiles,
       parties: parties,
     });
+
+    console.log("[DealSense] summary debug", summary);
 
     // Delete existing findings for this run (idempotency)
     await supabase
@@ -162,6 +209,11 @@ export async function POST(
         severity: f.severity,
         category: f.category,
         message: f.message,
+        finding_id: f.id,
+        title: f.title,
+        fix: f.fix,
+        score_impact: f.scoreImpact,
+        evidence: f.evidence ?? null,
       }));
 
       const { error: insertError } = await supabase
@@ -178,12 +230,16 @@ export async function POST(
       }
     }
 
-    // Set status to completed
+    // Set status to completed and persist assessment summary
     const { error: completeError } = await supabase
       .from("submission_runs")
       .update({
         status: "completed",
         updated_at: new Date().toISOString(),
+        score: summary.score,
+        assessment_status: summary.status,
+        top_fixes: summary.topFixes,
+        assessed_at: new Date().toISOString(),
       })
       .eq("id", runId);
 
@@ -196,7 +252,7 @@ export async function POST(
       return NextResponse.json({ error: "Failed to complete run" }, { status: 500 });
     }
 
-    return NextResponse.json({ status: "completed", findingsCount: findings.length });
+    return NextResponse.json({ status: "completed", findingsCount: findings.length, summary });
   } catch (err) {
     console.error("[DealSense Process API] Error processing run:", err);
     
