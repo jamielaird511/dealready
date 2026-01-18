@@ -260,6 +260,41 @@ export default function RunResultsPage() {
   const warningCount = findings.filter(f => f.severity === "warning").length;
   const infoCount = findings.filter(f => f.severity === "info").length;
 
+  // Handler to update finding workflow_state
+  async function handleWorkflowStateChange(findingId: string, newWorkflowState: string) {
+    try {
+      const response = await fetch(`/api/dealsense/findings/${findingId}`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ workflow_state: newWorkflowState }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        console.error("Failed to update finding workflow_state:", error);
+        alert(`Failed to update status: ${error.error || "Unknown error"}`);
+        return;
+      }
+
+      // Reload findings to reflect the update
+      const supabase = supabaseBrowser();
+      const { data: findingsData } = await supabase
+        .from("submission_run_findings")
+        .select("*")
+        .eq("run_id", runId)
+        .order("created_at", { ascending: true });
+
+      if (findingsData) {
+        setFindings(findingsData);
+      }
+    } catch (err) {
+      console.error("Error updating finding workflow_state:", err);
+      alert("Failed to update status. Please try again.");
+    }
+  }
+
   return (
     <main style={{ maxWidth: 1200, margin: "40px auto", padding: 16 }}>
       {/* Header */}
@@ -402,25 +437,44 @@ export default function RunResultsPage() {
                       border: `1px solid ${colors.color}20`,
                     }}
                   >
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                      <span
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, justifyContent: "space-between" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span
+                          style={{
+                            padding: "4px 8px",
+                            borderRadius: 4,
+                            background: colors.bg,
+                            color: colors.color,
+                            fontSize: 11,
+                            fontWeight: 600,
+                            textTransform: "capitalize",
+                          }}
+                        >
+                          {finding.severity}
+                        </span>
+                        {finding.category && (
+                          <span style={{ fontSize: 12, color: "#6b7280" }}>
+                            {finding.category}
+                          </span>
+                        )}
+                      </div>
+                      <select
+                        value={finding.workflow_state || finding.status || "open"}
+                        onChange={(e) => handleWorkflowStateChange(finding.id, e.target.value)}
                         style={{
                           padding: "4px 8px",
                           borderRadius: 4,
-                          background: colors.bg,
-                          color: colors.color,
-                          fontSize: 11,
-                          fontWeight: 600,
-                          textTransform: "capitalize",
+                          border: "1px solid rgba(0,0,0,0.2)",
+                          fontSize: 12,
+                          cursor: "pointer",
+                          background: "white",
                         }}
                       >
-                        {finding.severity}
-                      </span>
-                      {finding.category && (
-                        <span style={{ fontSize: 12, color: "#6b7280" }}>
-                          {finding.category}
-                        </span>
-                      )}
+                        <option value="open">Open</option>
+                        <option value="acknowledged">Acknowledged</option>
+                        <option value="resolved">Resolved</option>
+                        <option value="dismissed">Dismissed</option>
+                      </select>
                     </div>
                     <p style={{ fontSize: 14, margin: 0, color: "#374151" }}>
                       {finding.message}
