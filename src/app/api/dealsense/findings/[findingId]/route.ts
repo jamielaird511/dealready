@@ -28,24 +28,26 @@ export async function PATCH(
 
     // Parse request body
     const body = await req.json().catch(() => ({}));
-    const { status, owner, resolution_note } = body;
+    const { workflow_state, status, owner, resolution_note } = body;
 
     // Build update object with only allowed fields
     const updates: any = {};
 
-    // Validate and set status
-    if (status !== undefined) {
-      const validStatuses = ['open', 'requested', 'resolved', 'waived'];
-      if (!validStatuses.includes(status)) {
+    // Validate and set workflow_state (preferred) or status (backward compatibility)
+    const stateValue = workflow_state !== undefined ? workflow_state : status;
+    if (stateValue !== undefined) {
+      const validStates = ['open', 'acknowledged', 'resolved', 'dismissed'];
+      if (!validStates.includes(stateValue)) {
         return NextResponse.json(
-          { error: "Invalid status", status },
+          { error: "Invalid workflow_state", workflow_state: stateValue },
           { status: 400 }
         );
       }
-      updates.status = status;
+      updates.workflow_state = stateValue;
+      updates.state_changed_at = new Date().toISOString();
 
-      // Set resolved_at when status is 'resolved'
-      if (status === 'resolved') {
+      // Set resolved_at when workflow_state is 'resolved'
+      if (stateValue === 'resolved') {
         updates.resolved_at = new Date().toISOString();
       }
     }
