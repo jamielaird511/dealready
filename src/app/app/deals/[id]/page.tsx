@@ -165,6 +165,11 @@ export default function DealPage() {
   const [showDetails, setShowDetails] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // DealSense modal state
+  const [showDealSenseModal, setShowDealSenseModal] = useState(false);
+  const [dealSenseLoading, setDealSenseLoading] = useState(false);
+  const [dealSenseError, setDealSenseError] = useState<string | null>(null);
+
   useEffect(() => {
     async function loadDeal() {
       const supabase = supabaseBrowser();
@@ -855,11 +860,16 @@ export default function DealPage() {
               }
               if (!hasFiles) {
                 alert("Please upload files before running DealSense checks.");
-              } else {
-                alert("DealSense checks coming soon.");
+                return;
               }
+              if (!activeSubmissionId) {
+                alert("No submission available. Please try again.");
+                return;
+              }
+              setDealSenseError(null);
+              setShowDealSenseModal(true);
             }}
-            disabled={!hasFiles || !hasBorrower}
+            disabled={!hasFiles || !hasBorrower || !activeSubmissionId}
             style={{
               padding: "10px 20px",
               fontSize: 14,
@@ -891,6 +901,134 @@ export default function DealPage() {
           )}
         </div>
       </div>
+
+      {/* DealSense Confirmation Modal */}
+      {showDealSenseModal && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: "rgba(0, 0, 0, 0.5)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !dealSenseLoading) {
+              setShowDealSenseModal(false);
+            }
+          }}
+        >
+          <div
+            style={{
+              background: "white",
+              borderRadius: 12,
+              padding: 24,
+              maxWidth: 400,
+              width: "90%",
+              boxShadow: "0 10px 25px rgba(0,0,0,0.15)",
+            }}
+          >
+            <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 12 }}>
+              Run DealSense
+            </h2>
+            <p style={{ fontSize: 14, color: "#6b7280", marginBottom: 20 }}>
+              This will analyze your deal and check for missing documents, required parties, and compliance issues. Continue?
+            </p>
+
+            {dealSenseError && (
+              <div
+                style={{
+                  padding: 12,
+                  background: "#fee2e2",
+                  borderRadius: 8,
+                  marginBottom: 16,
+                  border: "1px solid #dc2626",
+                }}
+              >
+                <p style={{ fontSize: 13, color: "#991b1b", margin: 0 }}>
+                  {dealSenseError}
+                </p>
+              </div>
+            )}
+
+            <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
+              <button
+                onClick={() => {
+                  if (!dealSenseLoading) {
+                    setShowDealSenseModal(false);
+                    setDealSenseError(null);
+                  }
+                }}
+                disabled={dealSenseLoading}
+                style={{
+                  padding: "10px 20px",
+                  fontSize: 14,
+                  fontWeight: 600,
+                  borderRadius: 8,
+                  border: "1px solid rgba(0,0,0,0.2)",
+                  background: "white",
+                  cursor: dealSenseLoading ? "not-allowed" : "pointer",
+                  opacity: dealSenseLoading ? 0.6 : 1,
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                  if (!activeSubmissionId || dealSenseLoading) return;
+
+                  setDealSenseLoading(true);
+                  setDealSenseError(null);
+
+                  try {
+                    const supabase = supabaseBrowser();
+                    const { data: newRun, error: createError } = await supabase
+                      .from("submission_runs")
+                      .insert({
+                        submission_id: activeSubmissionId,
+                        status: "queued",
+                      })
+                      .select()
+                      .single();
+
+                    if (createError) {
+                      console.error("Error creating run:", createError);
+                      setDealSenseError("Failed to create DealSense run. Please try again.");
+                      setDealSenseLoading(false);
+                      return;
+                    }
+
+                    router.push(`/app/deals/${dealId}/runs/${newRun.id}`);
+                  } catch (err) {
+                    console.error("Error creating DealSense run:", err);
+                    setDealSenseError("Failed to create DealSense run. Please try again.");
+                    setDealSenseLoading(false);
+                  }
+                }}
+                disabled={dealSenseLoading}
+                style={{
+                  padding: "10px 20px",
+                  fontSize: 14,
+                  fontWeight: 600,
+                  borderRadius: 8,
+                  border: "1px solid rgba(0,0,0,0.2)",
+                  background: dealSenseLoading ? "#9ca3af" : "#10b981",
+                  color: "white",
+                  cursor: dealSenseLoading ? "not-allowed" : "pointer",
+                  opacity: dealSenseLoading ? 0.6 : 1,
+                }}
+              >
+                {dealSenseLoading ? "Creating..." : "Confirm & Run"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Deal Details Section */}
       {deal && (
