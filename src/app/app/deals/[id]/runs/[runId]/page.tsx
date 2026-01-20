@@ -262,33 +262,43 @@ export default function RunResultsPage() {
 
   // Handler to update finding workflow_state
   async function handleWorkflowStateChange(findingId: string, newWorkflowState: string) {
+    if (!findingId) {
+      console.error("Missing findingId in handleWorkflowStateChange");
+      return;
+    }
+
     try {
       const response = await fetch(`/api/dealsense/findings/${findingId}`, {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ workflow_state: newWorkflowState }),
+        body: JSON.stringify({ workflow_state: newWorkflowState.toLowerCase() }),
       });
 
       if (!response.ok) {
-        const error = await response.json().catch(() => ({}));
-        console.error("Failed to update finding workflow_state:", error);
-        alert(`Failed to update status: ${error.error || "Unknown error"}`);
+        const errorText = await response.text().catch(() => "Unable to read error");
+        const errorJson = await response.json().catch(() => ({}));
+        console.error("Failed to update finding workflow_state:", {
+          status: response.status,
+          statusText: response.statusText,
+          errorText,
+          errorJson,
+        });
+        alert(`Failed to update status: ${errorJson.error || errorText || "Unknown error"}`);
         return;
       }
 
-      // Reload findings to reflect the update
-      const supabase = supabaseBrowser();
-      const { data: findingsData } = await supabase
-        .from("submission_run_findings")
-        .select("*")
-        .eq("run_id", runId)
-        .order("created_at", { ascending: true });
-
-      if (findingsData) {
-        setFindings(findingsData);
-      }
+      const result = await response.json();
+      
+      // Update local state immediately to reflect the new value
+      setFindings((prevFindings) =>
+        prevFindings.map((f) =>
+          f.id === findingId
+            ? { ...f, workflow_state: result.finding?.workflow_state ?? newWorkflowState.toLowerCase() }
+            : f
+        )
+      );
     } catch (err) {
       console.error("Error updating finding workflow_state:", err);
       alert("Failed to update status. Please try again.");
@@ -423,43 +433,95 @@ export default function RunResultsPage() {
               </p>
             </div>
           ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              {findings.map((finding) => {
-                const colors = severityColors[finding.severity] ?? severityColors.info;
+            <>
+              <p style={{ fontSize: 12, color: "#6b7280", marginBottom: 12, marginTop: 0 }}>
+                Resolved and dismissed items are shown at the bottom.
+              </p>
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                {(() => {
+                  // Sort findings: open/acknowledged first, resolved/dismissed last
+                  const sortedFindings = [...findings].sort((a, b) => {
+                    const aState = a.workflow_state ?? "open";
+                    const bState = b.workflow_state ?? "open";
+                    const activeStates = ["open", "acknowledged"];
+                    const completedStates = ["resolved", "dismissed"];
+                    
+                    const aIsActive = activeStates.includes(aState);
+                    const bIsActive = activeStates.includes(bState);
+                    const aIsCompleted = completedStates.includes(aState);
+                    const bIsCompleted = completedStates.includes(bState);
+                    
+                    // Active states come first
+                    if (aIsActive && !bIsActive) return -1;
+                    if (!aIsActive && bIsActive) return 1;
+                    
+                    // Completed states come last
+                    if (aIsCompleted && !bIsCompleted) return 1;
+                    if (!aIsCompleted && bIsCompleted) return -1;
+                    
+                    // Within same group, preserve original order
+                    return 0;
+                  });
+                  
+                  return sortedFindings.map((finding) => {
+                    const colors = severityColors[finding.severity] ?? severityColors.info;
+                    const workflowState = finding.workflow_state ?? "open";
+                    const isCompleted = workflowState === "resolved" || workflowState === "dismissed";
 
-                return (
-                  <div
-                    key={finding.id}
-                    style={{
-                      padding: "12px 16px",
-                      background: "#f9fafb",
-                      borderRadius: 8,
-                      border: `1px solid ${colors.color}20`,
-                    }}
-                  >
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, justifyContent: "space-between" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <span
-                          style={{
-                            padding: "4px 8px",
-                            borderRadius: 4,
-                            background: colors.bg,
-                            color: colors.color,
-                            fontSize: 11,
-                            fontWeight: 600,
-                            textTransform: "capitalize",
-                          }}
-                        >
-                          {finding.severity}
-                        </span>
-                        {finding.category && (
-                          <span style={{ fontSize: 12, color: "#6b7280" }}>
-                            {finding.category}
+                    return (
+                      <div
+                        key={finding.id}
+                        style={{
+                          padding: "12px 16px",
+                          background: isCompleted ? "#f3f4f6" : "#f9fafb",
+                          borderRadius: 8,
+                          border: `1px solid ${isCompleted ? "rgba(0,0,0,0.1)" : `${colors.color}20`}`,
+                          opacity: isCompleted ? 0.6 : 1,
+                        }}
+                      >
+                    <div style={{ display: "flex", alignItems: "flex-start", gap: 12, justifyContent: "space-between" }}>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                          <span
+                            style={{
+                              padding: "4px 8px",
+                              borderRadius: 4,
+                              background: colors.bg,
+                              color: colors.color,
+                              fontSize: 11,
+                              fontWeight: 600,
+                              textTransform: "capitalize",
+                            }}
+                          >
+                            {finding.severity}
                           </span>
+                          <h3 style={{ fontSize: 14, fontWeight: 600, margin: 0, color: "#111827" }}>
+                            {finding.title || "Finding"}
+                          </h3>
+                          {finding.category && (
+                            <span
+                              style={{
+                                padding: "2px 6px",
+                                borderRadius: 4,
+                                fontSize: 10,
+                                color: "#6b7280",
+                                background: "#f3f4f6",
+                                textTransform: "uppercase",
+                                letterSpacing: "0.5px",
+                              }}
+                            >
+                              {finding.category}
+                            </span>
+                          )}
+                        </div>
+                        {finding.message && (
+                          <p style={{ fontSize: 13, margin: 0, color: "#6b7280", marginTop: 4 }}>
+                            {finding.message}
+                          </p>
                         )}
                       </div>
                       <select
-                        value={finding.workflow_state || finding.status || "open"}
+                        value={finding.workflow_state ?? "open"}
                         onChange={(e) => handleWorkflowStateChange(finding.id, e.target.value)}
                         style={{
                           padding: "4px 8px",
@@ -468,6 +530,7 @@ export default function RunResultsPage() {
                           fontSize: 12,
                           cursor: "pointer",
                           background: "white",
+                          flexShrink: 0,
                         }}
                       >
                         <option value="open">Open</option>
@@ -476,13 +539,12 @@ export default function RunResultsPage() {
                         <option value="dismissed">Dismissed</option>
                       </select>
                     </div>
-                    <p style={{ fontSize: 14, margin: 0, color: "#374151" }}>
-                      {finding.message}
-                    </p>
-                  </div>
-                );
-              })}
-            </div>
+                      </div>
+                    );
+                  });
+                })()}
+              </div>
+            </>
           )}
         </div>
       )}
