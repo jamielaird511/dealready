@@ -53,9 +53,8 @@ export default function AppHome() {
   }
 
   return (
-    <div className="min-h-screen bg-white px-6 py-12">
-      <div className="max-w-6xl mx-auto">
-        <div className="mb-8 flex items-start justify-between">
+    <div className="space-y-8">
+      <div className="flex items-start justify-between">
           <div>
             <h1 className="text-3xl font-semibold text-gray-900 mb-2">Broker Dashboard</h1>
             <p className="text-base text-gray-600">
@@ -75,7 +74,7 @@ export default function AppHome() {
           {/* Deals Card */}
           <Link
             href="/app/deals"
-            className="rounded-none border-2 border-slate-200 bg-white p-6 transition-transform transition-shadow duration-200 hover:-translate-y-0.5 hover:shadow-md"
+            className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 transition-transform transition-shadow duration-200 hover:-translate-y-0.5 hover:shadow-md"
           >
             <div className="flex items-center gap-3 mb-3">
               <svg
@@ -104,7 +103,7 @@ export default function AppHome() {
           {/* Submissions Card */}
           <Link
             href="/app/submissions"
-            className="rounded-none border-2 border-slate-200 bg-white p-6 transition-transform transition-shadow duration-200 hover:-translate-y-0.5 hover:shadow-md"
+            className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 transition-transform transition-shadow duration-200 hover:-translate-y-0.5 hover:shadow-md"
           >
             <div className="flex items-center gap-3 mb-3">
               <svg
@@ -133,7 +132,7 @@ export default function AppHome() {
           {/* Requests Card */}
           <Link
             href="/app/requests"
-            className="rounded-none border-2 border-slate-200 bg-white p-6 transition-transform transition-shadow duration-200 hover:-translate-y-0.5 hover:shadow-md"
+            className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 transition-transform transition-shadow duration-200 hover:-translate-y-0.5 hover:shadow-md"
           >
             <div className="flex items-center gap-3 mb-3">
               <svg
@@ -162,7 +161,7 @@ export default function AppHome() {
           {/* Settings Card */}
           <Link
             href="/app/settings"
-            className="rounded-none border-2 border-slate-200 bg-white p-6 transition-transform transition-shadow duration-200 hover:-translate-y-0.5 hover:shadow-md"
+            className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 transition-transform transition-shadow duration-200 hover:-translate-y-0.5 hover:shadow-md"
           >
             <div className="flex items-center gap-3 mb-3">
               <svg
@@ -194,7 +193,6 @@ export default function AppHome() {
             </p>
           </Link>
         </div>
-      </div>
     </div>
   );
 }

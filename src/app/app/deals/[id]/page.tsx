@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useRef } from "react";
+import { createPortal } from "react-dom";
 import { useParams, useRouter } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
 import { DeleteFileDialog } from "@/components/DeleteFileDialog";
@@ -45,37 +46,48 @@ function FileItem({ file, getDownloadUrl, onDelete }: { file: any; getDownloadUr
   return (
     <div
       style={{
-        border: "1px solid rgba(0,0,0,0.1)",
-        borderRadius: 8,
-        padding: 12,
+        borderRadius: 6,
+        padding: 8,
         display: "flex",
         justifyContent: "space-between",
         alignItems: "center",
-        gap: 16,
+        gap: 12,
+        background: "white",
+        boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
       }}
     >
-      <div style={{ flex: 1 }}>
-        <div style={{ fontWeight: 600, marginBottom: 4, fontSize: 14 }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div 
+          style={{ 
+            fontWeight: 600, 
+            marginBottom: 2, 
+            fontSize: 13,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
           {file.display_name || file.original_filename}
         </div>
         {file.created_at && (
-          <div style={{ fontSize: 12, opacity: 0.6 }}>
-            Uploaded: {new Date(file.created_at).toLocaleString()}
+          <div style={{ fontSize: 11, color: "#6b7280" }}>
+            {new Date(file.created_at).toLocaleDateString()}
           </div>
         )}
       </div>
-      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+      <div style={{ display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
         <button
           onClick={handleDownload}
           disabled={loadingUrl}
           style={{
-            padding: "6px 12px",
-            borderRadius: 8,
+            padding: "4px 8px",
+            borderRadius: 6,
             border: "1px solid rgba(0,0,0,0.2)",
             cursor: loadingUrl ? "not-allowed" : "pointer",
             fontWeight: 600,
-            fontSize: 13,
+            fontSize: 12,
             opacity: loadingUrl ? 0.6 : 1,
+            background: "white",
           }}
         >
           {loadingUrl ? "Loading..." : "Download"}
@@ -85,14 +97,14 @@ function FileItem({ file, getDownloadUrl, onDelete }: { file: any; getDownloadUr
           onClick={() => setDeleteOpen(true)}
           disabled={deleting}
           style={{
-            padding: "6px 12px",
-            borderRadius: 8,
+            padding: "4px 8px",
+            borderRadius: 6,
             border: "1px solid #dc2626",
             background: deleting ? "#fca5a5" : "#fee2e2",
             color: "#991b1b",
             cursor: deleting ? "not-allowed" : "pointer",
             fontWeight: 600,
-            fontSize: 13,
+            fontSize: 12,
             opacity: deleting ? 0.6 : 1,
           }}
           title={`Delete ${file.display_name || file.original_filename}`}
@@ -169,6 +181,31 @@ export default function DealPage() {
   const [showDealSenseModal, setShowDealSenseModal] = useState(false);
   const [dealSenseLoading, setDealSenseLoading] = useState(false);
   const [dealSenseError, setDealSenseError] = useState<string | null>(null);
+
+  // Add Customer modal state
+  const [showAddCustomerModal, setShowAddCustomerModal] = useState(false);
+
+  // Add Entity modal state
+  const [showAddEntityModal, setShowAddEntityModal] = useState(false);
+  
+  // Rename deal modal state
+  const [showRenameModal, setShowRenameModal] = useState(false);
+  const [renameName, setRenameName] = useState("");
+  const [renaming, setRenaming] = useState(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
+  const scrollPositionRef = useRef<number>(0);
+  const renameInputRef = useRef<HTMLInputElement>(null);
+  const [mounted, setMounted] = useState(false);
+
+  // Upload Pack category accordion state
+  const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
+  const [showEmptyCategories, setShowEmptyCategories] = useState(false);
+
+  // Latest DealSense run state
+  const [latestRun, setLatestRun] = useState<any>(null);
+  const [latestFindings, setLatestFindings] = useState<any[]>([]);
+  const [latestRunLoading, setLatestRunLoading] = useState(false);
+  const [latestRunError, setLatestRunError] = useState<string | null>(null);
 
   useEffect(() => {
     async function loadDeal() {
@@ -356,6 +393,116 @@ export default function DealPage() {
     }
   }, [dealId, loading]);
 
+  // Initialize expanded categories based on files
+  useEffect(() => {
+    if (!filesLoading && files.length > 0) {
+      const categoriesWithFiles = new Set<string>();
+      files.forEach(file => {
+        if (file.category) {
+          categoriesWithFiles.add(file.category);
+        }
+      });
+      setExpandedCategories(categoriesWithFiles);
+    }
+  }, [files, filesLoading]);
+
+  // Load latest DealSense run and findings
+  useEffect(() => {
+    async function loadLatestRun() {
+      if (!activeSubmissionId) {
+        setLatestRun(null);
+        setLatestFindings([]);
+        return;
+      }
+
+      setLatestRunLoading(true);
+      setLatestRunError(null);
+      const supabase = supabaseBrowser();
+
+      try {
+        // Get latest run for this submission
+        const { data: runs, error: runsError } = await supabase
+          .from("submission_runs")
+          .select("*")
+          .eq("submission_id", activeSubmissionId)
+          .order("created_at", { ascending: false })
+          .limit(1);
+
+        if (runsError) {
+          console.error("Error loading latest run:", runsError);
+          setLatestRunError("Couldn't load DealSense status");
+          setLatestRunLoading(false);
+          return;
+        }
+
+        const latest = runs?.[0] || null;
+        setLatestRun(latest);
+
+        if (latest?.id) {
+          // Get findings for this run
+          const { data: findingsData, error: findingsError } = await supabase
+            .from("submission_run_findings")
+            .select("*")
+            .eq("run_id", latest.id);
+
+          if (findingsError) {
+            console.error("Error loading findings:", findingsError);
+            // Don't fail completely, just log and continue
+          } else {
+            setLatestFindings(findingsData || []);
+          }
+        } else {
+          setLatestFindings([]);
+        }
+      } catch (err) {
+        console.error("Error loading latest DealSense run:", err);
+        setLatestRunError("Couldn't load DealSense status");
+      } finally {
+        setLatestRunLoading(false);
+      }
+    }
+
+    loadLatestRun();
+  }, [activeSubmissionId]);
+
+  // Lock body scroll when rename modal opens
+  useEffect(() => {
+    if (showRenameModal) {
+      // Capture current scroll position
+      scrollPositionRef.current = window.scrollY;
+      
+      // Lock body scroll
+      document.body.style.position = "fixed";
+      document.body.style.top = `-${scrollPositionRef.current}px`;
+      document.body.style.width = "100%";
+      
+      // Focus input after a brief delay to avoid scroll jump
+      setTimeout(() => {
+        if (renameInputRef.current) {
+          renameInputRef.current.focus({ preventScroll: true });
+        }
+      }, 0);
+      
+      return () => {
+        // Restore scroll position on unmount
+        const scrollY = document.body.style.top;
+        document.body.style.position = "";
+        document.body.style.top = "";
+        document.body.style.width = "";
+        if (scrollY) {
+          const parsedScrollY = parseInt(scrollY.replace("px", ""), 10) || 0;
+          window.scrollTo(0, Math.abs(parsedScrollY));
+        }
+      };
+    }
+  }, [showRenameModal]);
+
+  // Set mounted state for portal (client-side only)
+  useEffect(() => {
+    setMounted(true);
+    return () => setMounted(false);
+  }, []);
+
   async function handleSave() {
     if (!deal) return;
 
@@ -374,7 +521,6 @@ export default function DealPage() {
       const { data: updatedDeal, error: updateError } = await supabase
         .from("deals")
         .update({
-          name: name.trim() || "New Deal",
           status: status,
           notes: notes.trim() || null,
           updated_at: new Date().toISOString(),
@@ -412,6 +558,58 @@ export default function DealPage() {
       console.error("Error:", err);
       setSaveMessage({ type: "error", text: "An unexpected error occurred." });
       setSaving(false);
+    }
+  }
+
+  async function handleRenameDeal() {
+    if (!deal || !renameName.trim() || renameName.trim() === (deal?.name || name)) {
+      return;
+    }
+
+    setRenaming(true);
+    setRenameError(null);
+    const supabase = supabaseBrowser();
+
+    try {
+      const { data: { user }, error: userError } = await supabase.auth.getUser();
+      if (userError || !user) {
+        setRenameError("Not authenticated. Please sign in again.");
+        setRenaming(false);
+        return;
+      }
+
+      const { data: updatedDeal, error: updateError } = await supabase
+        .from("deals")
+        .update({
+          name: renameName.trim(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", dealId)
+        .select()
+        .maybeSingle();
+
+      if (updateError) {
+        console.error("Error renaming deal:", updateError);
+        setRenameError("Failed to rename deal. Please try again.");
+        setRenaming(false);
+        return;
+      }
+
+      if (!updatedDeal) {
+        setRenameError("Deal not found or access denied.");
+        setRenaming(false);
+        return;
+      }
+
+      setDeal(updatedDeal);
+      setName(updatedDeal.name || "");
+      setShowRenameModal(false);
+      setRenameName("");
+      setRenaming(false);
+    } catch (err) {
+      console.error("Error:", err);
+      setRenameError("An unexpected error occurred.");
+      setRenaming(false);
     }
   }
 
@@ -742,7 +940,7 @@ export default function DealPage() {
 
   if (loading) {
     return (
-      <main style={{ maxWidth: 1200, margin: "40px auto", padding: 16 }}>
+      <main>
         <p>Loading deal...</p>
       </main>
     );
@@ -751,7 +949,7 @@ export default function DealPage() {
   if (error) {
     if (error === "not_found") {
       return (
-        <main style={{ maxWidth: 1200, margin: "40px auto", padding: 16 }}>
+        <main>
           <div
             style={{
               border: "1px solid rgba(0,0,0,0.2)",
@@ -786,7 +984,7 @@ export default function DealPage() {
     }
 
     return (
-      <main style={{ maxWidth: 1200, margin: "40px auto", padding: 16 }}>
+      <main>
         <div
           style={{
             border: "1px solid rgba(0,0,0,0.2)",
@@ -832,24 +1030,57 @@ export default function DealPage() {
   const hasGuarantor = dealParties.some(p => getPartyRoles(p).includes("guarantor"));
 
   return (
-    <main style={{ maxWidth: 1200, margin: "40px auto", padding: 16 }}>
+    <div className="space-y-8">
       {/* Header with Run DealSense button */}
-      <div style={{ marginBottom: 24, display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+      <div className="flex justify-between items-start">
         <div>
           <button
-            onClick={() => router.push("/app")}
+            onClick={() => router.push("/app/deals")}
             style={{
               padding: "8px 12px",
               borderRadius: 10,
               border: "1px solid rgba(0,0,0,0.2)",
+              background: "white",
               cursor: "pointer",
               fontWeight: 600,
               marginBottom: 16,
             }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = "white";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = "white";
+            }}
           >
-            ← Back
+            ← Back to Deals
           </button>
-          <h1 style={{ fontSize: 28, fontWeight: 800, marginBottom: 0 }}>Deal Details</h1>
+          <div className="flex items-center gap-3 min-w-0">
+            <button
+              onClick={() => {
+                setRenameName(deal?.name || name || "");
+                setRenameError(null);
+                setShowRenameModal(true);
+              }}
+              className="flex-shrink-0 p-2 rounded-md text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors cursor-pointer"
+              title="Rename deal"
+            >
+              <svg
+                className="w-5 h-5"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+                />
+              </svg>
+            </button>
+            <h1 className="text-3xl font-bold mb-0 flex-1 min-w-0 truncate">{deal?.name || name || "Deal Details"}</h1>
+          </div>
         </div>
         <div style={{ textAlign: "right" }}>
           <button
@@ -870,17 +1101,11 @@ export default function DealPage() {
               setShowDealSenseModal(true);
             }}
             disabled={!hasFiles || !hasBorrower || !activeSubmissionId}
-            style={{
-              padding: "10px 20px",
-              fontSize: 14,
-              fontWeight: 600,
-              borderRadius: 8,
-              border: "1px solid rgba(0,0,0,0.2)",
-              background: hasFiles && hasBorrower ? "#10b981" : "#e5e7eb",
-              color: hasFiles && hasBorrower ? "white" : "#9ca3af",
-              cursor: hasFiles && hasBorrower ? "pointer" : "not-allowed",
-              opacity: hasFiles && hasBorrower ? 1 : 0.6,
-            }}
+            className={`px-4 py-2 text-base font-semibold rounded-lg border ${
+              hasFiles && hasBorrower
+                ? "bg-green-600 text-white border-green-700 cursor-pointer hover:bg-green-700"
+                : "bg-gray-200 text-gray-400 border-gray-300 cursor-not-allowed opacity-60"
+            }`}
           >
             {!hasBorrower ? "Add a borrower to run DealSense" : "Run DealSense"}
           </button>
@@ -925,7 +1150,7 @@ export default function DealPage() {
         >
           <div
             style={{
-              background: "white",
+            background: "white",
               borderRadius: 12,
               padding: 24,
               maxWidth: 400,
@@ -941,11 +1166,11 @@ export default function DealPage() {
             </p>
 
             {dealSenseError && (
-              <div
-                style={{
-                  padding: 12,
+            <div
+              style={{
+                padding: 12,
                   background: "#fee2e2",
-                  borderRadius: 8,
+                borderRadius: 8,
                   marginBottom: 16,
                   border: "1px solid #dc2626",
                 }}
@@ -953,8 +1178,8 @@ export default function DealPage() {
                 <p style={{ fontSize: 13, color: "#991b1b", margin: 0 }}>
                   {dealSenseError}
                 </p>
-              </div>
-            )}
+            </div>
+          )}
 
             <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
               <button
@@ -1030,18 +1255,646 @@ export default function DealPage() {
         </div>
       )}
 
-      {/* Deal Details Section */}
-      {deal && (
+      {/* Add Customer Modal */}
+      {showAddCustomerModal && (
         <div
-          style={{
-            border: "1px solid rgba(0,0,0,0.2)",
-            borderRadius: 10,
-            padding: 20,
-            background: "white",
-            marginBottom: 24,
+                style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: "rgba(0, 0, 0, 0.5)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !addingParty) {
+              setShowAddCustomerModal(false);
+            }
           }}
         >
-          <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 20 }}>Deal Details</h2>
+          <div
+                style={{
+                  background: "white",
+              borderRadius: 12,
+              padding: 24,
+              maxWidth: 400,
+              width: "90%",
+              boxShadow: "0 10px 25px rgba(0,0,0,0.15)",
+            }}
+          >
+            <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 16 }}>
+              Add Customer
+            </h2>
+            <div>
+              <div style={{ marginBottom: 12 }}>
+                    <input
+                      type="text"
+                      value={newCustomerName}
+                      onChange={(e) => setNewCustomerName(e.target.value)}
+                      placeholder="Customer name"
+                      style={{
+                        width: "100%",
+                        padding: "8px 12px",
+                        fontSize: 14,
+                        border: "1px solid rgba(0,0,0,0.2)",
+                        borderRadius: 8,
+                        outline: "none",
+                      }}
+                    />
+                  </div>
+              <div style={{ marginBottom: 20 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, color: "#374151" }}>Roles</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                  {availableRoles.map((role) => (
+                    <label
+                      key={role.value}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 4,
+                        fontSize: 13,
+                        cursor: "pointer",
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={newCustomerRoles.includes(role.value)}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setNewCustomerRoles([...newCustomerRoles, role.value]);
+                          } else {
+                            setNewCustomerRoles(newCustomerRoles.filter(r => r !== role.value));
+                          }
+                        }}
+                        style={{ cursor: "pointer" }}
+                      />
+                      <span>{role.label}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
+              <button
+                onClick={() => {
+                  if (!addingParty) {
+                    setShowAddCustomerModal(false);
+                    setNewCustomerName("");
+                    setNewCustomerRoles(["borrower"]);
+                  }
+                }}
+                disabled={addingParty}
+                style={{
+                  padding: "10px 20px",
+                        fontSize: 14,
+                  fontWeight: 600,
+                        borderRadius: 8,
+                  border: "1px solid rgba(0,0,0,0.2)",
+                        background: "white",
+                  cursor: addingParty ? "not-allowed" : "pointer",
+                  opacity: addingParty ? 0.6 : 1,
+                }}
+              >
+                Cancel
+              </button>
+                  <button
+                    onClick={async () => {
+                  if (!newCustomerName.trim() || addingParty || newCustomerRoles.length === 0) return;
+                      setAddingParty(true);
+                      const supabase = supabaseBrowser();
+                  
+                  try {
+                    // Get organization_id
+                    const { data: { user } } = await supabase.auth.getUser();
+                    if (!user) {
+                      alert("Not authenticated. Please refresh and try again.");
+                      setAddingParty(false);
+                      return;
+                    }
+                    
+                    const { data: orgMember } = await supabase
+                      .from("organization_members")
+                      .select("organization_id")
+                      .eq("user_id", user.id)
+                      .maybeSingle();
+                    
+                    if (!orgMember?.organization_id) {
+                      alert("Error: Could not find organization. Please contact support.");
+                      setAddingParty(false);
+                      return;
+                    }
+                    
+                    // Upsert entity
+                    const entityId = await upsertEntity(orgMember.organization_id, "person", newCustomerName.trim());
+                    if (!entityId) {
+                      alert("Error creating entity. Please try again.");
+                      setAddingParty(false);
+                      return;
+                    }
+                    
+                    // Insert deal_parties with entity_id and roles
+                      const { data, error } = await supabase
+                        .from("deal_parties")
+                        .insert({
+                          deal_id: dealId,
+                        entity_id: entityId,
+                        roles: newCustomerRoles,
+                        // Legacy columns for backward compatibility
+                          type: "person",
+                          name: newCustomerName.trim(),
+                        role: newCustomerRoles[0] || null,
+                      })
+                      .select(`
+                        id,
+                        deal_id,
+                        roles,
+                        notes,
+                        entity_id,
+                        entities:entity_id (
+                          id,
+                          entity_type,
+                          display_name,
+                          email,
+                          phone
+                        ),
+                        type,
+                        name,
+                        role
+                      `)
+                        .single();
+                    
+                      if (error) {
+                        console.error("Error adding customer:", error);
+                        alert("Error adding customer. Please try again.");
+                      } else {
+                      // Normalize the response
+                      const entity = Array.isArray(data.entities) ? data.entities[0] : data.entities;
+                      const normalized = {
+                        id: data.id,
+                        deal_id: data.deal_id,
+                        roles: data.roles || [],
+                        notes: data.notes,
+                        entityId: entity?.id || null,
+                        entity_type: entity?.entity_type || data.type,
+                        display_name: entity?.display_name || data.name,
+                        email: entity?.email || null,
+                        phone: entity?.phone || null,
+                        type: entity?.entity_type || data.type,
+                        name: entity?.display_name || data.name,
+                        role: data.roles?.[0] || data.role || null,
+                      };
+                      setDealParties([...dealParties, normalized]);
+                        setNewCustomerName("");
+                      setNewCustomerRoles(["borrower"]);
+                      setShowAddCustomerModal(false);
+                    }
+                  } catch (err) {
+                    console.error("Error:", err);
+                    alert("An unexpected error occurred.");
+                      }
+                      setAddingParty(false);
+                    }}
+                disabled={!newCustomerName.trim() || addingParty || newCustomerRoles.length === 0}
+                    style={{
+                  padding: "10px 20px",
+                      fontSize: 14,
+                      fontWeight: 600,
+                      borderRadius: 8,
+                      border: "1px solid rgba(0,0,0,0.2)",
+                  background: addingParty ? "#9ca3af" : "#10b981",
+                      color: "white",
+                  cursor: !newCustomerName.trim() || addingParty || newCustomerRoles.length === 0 ? "not-allowed" : "pointer",
+                  opacity: !newCustomerName.trim() || addingParty || newCustomerRoles.length === 0 ? 0.6 : 1,
+                    }}
+                  >
+                {addingParty ? "Adding..." : "Add"}
+                  </button>
+                </div>
+          </div>
+                  </div>
+                )}
+
+      {/* Add Entity Modal */}
+      {showAddEntityModal && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: "rgba(0, 0, 0, 0.5)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !addingParty) {
+              setShowAddEntityModal(false);
+            }
+          }}
+        >
+          <div
+            style={{
+              background: "white",
+              borderRadius: 12,
+              padding: 24,
+              maxWidth: 400,
+              width: "90%",
+              boxShadow: "0 10px 25px rgba(0,0,0,0.15)",
+            }}
+          >
+            <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 16 }}>
+              Add Entity
+            </h2>
+            <div>
+              <div style={{ marginBottom: 12 }}>
+                    <input
+                      type="text"
+                      value={newEntityName}
+                      onChange={(e) => setNewEntityName(e.target.value)}
+                      placeholder="Entity name"
+                      style={{
+                        width: "100%",
+                        padding: "8px 12px",
+                        fontSize: 14,
+                        border: "1px solid rgba(0,0,0,0.2)",
+                        borderRadius: 8,
+                        outline: "none",
+                      }}
+                    />
+                  </div>
+              <div style={{ marginBottom: 20 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, color: "#374151" }}>Roles</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                  {availableRoles.map((role) => (
+                    <label
+                      key={role.value}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 4,
+                        fontSize: 13,
+                        cursor: "pointer",
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={newEntityRoles.includes(role.value)}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setNewEntityRoles([...newEntityRoles, role.value]);
+                          } else {
+                            setNewEntityRoles(newEntityRoles.filter(r => r !== role.value));
+                          }
+                        }}
+                        style={{ cursor: "pointer" }}
+                      />
+                      <span>{role.label}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
+              <button
+                onClick={() => {
+                  if (!addingParty) {
+                    setShowAddEntityModal(false);
+                    setNewEntityName("");
+                    setNewEntityRoles(["borrower"]);
+                  }
+                }}
+                disabled={addingParty}
+                style={{
+                  padding: "10px 20px",
+                        fontSize: 14,
+                  fontWeight: 600,
+                        borderRadius: 8,
+                  border: "1px solid rgba(0,0,0,0.2)",
+                        background: "white",
+                  cursor: addingParty ? "not-allowed" : "pointer",
+                  opacity: addingParty ? 0.6 : 1,
+                }}
+              >
+                Cancel
+              </button>
+                  <button
+                    onClick={async () => {
+                  if (!newEntityName.trim() || addingParty || newEntityRoles.length === 0) return;
+                      setAddingParty(true);
+                      const supabase = supabaseBrowser();
+                  
+                  try {
+                    // Get organization_id
+                    const { data: { user } } = await supabase.auth.getUser();
+                    if (!user) {
+                      alert("Not authenticated. Please refresh and try again.");
+                      setAddingParty(false);
+                      return;
+                    }
+                    
+                    const { data: orgMember } = await supabase
+                      .from("organization_members")
+                      .select("organization_id")
+                      .eq("user_id", user.id)
+                      .maybeSingle();
+                    
+                    if (!orgMember?.organization_id) {
+                      alert("Error: Could not find organization. Please contact support.");
+                      setAddingParty(false);
+                      return;
+                    }
+                    
+                    // Upsert entity (use 'company' as default entity_type for entities section)
+                    const entityId = await upsertEntity(orgMember.organization_id, "company", newEntityName.trim());
+                    if (!entityId) {
+                      alert("Error creating entity. Please try again.");
+                      setAddingParty(false);
+                      return;
+                    }
+                    
+                    // Insert deal_parties with entity_id and roles
+                      const { data, error } = await supabase
+                        .from("deal_parties")
+                        .insert({
+                          deal_id: dealId,
+                        entity_id: entityId,
+                        roles: newEntityRoles,
+                        // Legacy columns for backward compatibility
+                          type: "entity",
+                          name: newEntityName.trim(),
+                        role: newEntityRoles[0] || null,
+                      })
+                      .select(`
+                        id,
+                        deal_id,
+                        roles,
+                        notes,
+                        entity_id,
+                        entities:entity_id (
+                          id,
+                          entity_type,
+                          display_name,
+                          email,
+                          phone
+                        ),
+                        type,
+                        name,
+                        role
+                      `)
+                        .single();
+                    
+                      if (error) {
+                        console.error("Error adding entity:", error);
+                        alert("Error adding entity. Please try again.");
+                      } else {
+                      // Normalize the response
+                      const entity = Array.isArray(data.entities) ? data.entities[0] : data.entities;
+                      const normalized = {
+                        id: data.id,
+                        deal_id: data.deal_id,
+                        roles: data.roles || [],
+                        notes: data.notes,
+                        entityId: entity?.id || null,
+                        entity_type: entity?.entity_type || data.type,
+                        display_name: entity?.display_name || data.name,
+                        email: entity?.email || null,
+                        phone: entity?.phone || null,
+                        type: entity?.entity_type || data.type,
+                        name: entity?.display_name || data.name,
+                        role: data.roles?.[0] || data.role || null,
+                      };
+                      setDealParties([...dealParties, normalized]);
+                        setNewEntityName("");
+                      setNewEntityRoles(["borrower"]);
+                      setShowAddEntityModal(false);
+                    }
+                  } catch (err) {
+                    console.error("Error:", err);
+                    alert("An unexpected error occurred.");
+                      }
+                      setAddingParty(false);
+                    }}
+                disabled={!newEntityName.trim() || addingParty || newEntityRoles.length === 0}
+                style={{
+                  padding: "10px 20px",
+                  fontSize: 14,
+                  fontWeight: 600,
+                  borderRadius: 8,
+                  border: "1px solid rgba(0,0,0,0.2)",
+                  background: addingParty ? "#9ca3af" : "#10b981",
+                  color: "white",
+                  cursor: !newEntityName.trim() || addingParty || newEntityRoles.length === 0 ? "not-allowed" : "pointer",
+                  opacity: !newEntityName.trim() || addingParty || newEntityRoles.length === 0 ? 0.6 : 1,
+                }}
+              >
+                {addingParty ? "Adding..." : "Add"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Latest DealSense Card */}
+      {!latestRunLoading && (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+          <h2 className="text-xl font-semibold mb-4 text-gray-900">Latest DealSense</h2>
+
+          {latestRunError && (
+            <p style={{ fontSize: 13, color: "#dc2626", marginBottom: 12 }}>
+              {latestRunError}
+            </p>
+          )}
+
+          {!latestRun ? (
+            <div>
+              <p style={{ fontSize: 14, color: "#6b7280", marginBottom: 16 }}>
+                No DealSense run yet
+              </p>
+              <button
+                onClick={() => {
+                  if (!hasBorrower) {
+                    alert("Add at least one borrower (person or entity) to run DealSense.");
+                    return;
+                  }
+                  if (!hasFiles) {
+                    alert("Please upload files before running DealSense checks.");
+                    return;
+                  }
+                  if (!activeSubmissionId) {
+                    alert("No submission available. Please try again.");
+                    return;
+                  }
+                  setDealSenseError(null);
+                  setShowDealSenseModal(true);
+                }}
+                disabled={!hasFiles || !hasBorrower || !activeSubmissionId}
+                className={`px-4 py-2 text-base font-semibold rounded-lg border ${
+                  hasFiles && hasBorrower
+                    ? "bg-green-600 text-white border-green-700 cursor-pointer hover:bg-green-700"
+                    : "bg-gray-200 text-gray-400 border-gray-300 cursor-not-allowed opacity-60"
+                }`}
+              >
+                Run DealSense
+              </button>
+            </div>
+          ) : (
+            <>
+              <div style={{ marginBottom: 16 }}>
+                <div className="flex items-center gap-3 mb-3">
+                  <span style={{ fontSize: 13, color: "#6b7280" }}>
+                    Last run: {(() => {
+                      const runDate = new Date(latestRun.created_at);
+                      const now = new Date();
+                      const diffMs = now.getTime() - runDate.getTime();
+                      const diffMins = Math.floor(diffMs / 60000);
+                      const diffHours = Math.floor(diffMs / 3600000);
+                      const diffDays = Math.floor(diffMs / 86400000);
+                      
+                      if (diffMins < 1) return "Just now";
+                      if (diffMins < 60) return `${diffMins} minute${diffMins > 1 ? "s" : ""} ago`;
+                      if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? "s" : ""} ago`;
+                      if (diffDays < 7) return `${diffDays} day${diffDays > 1 ? "s" : ""} ago`;
+                      return runDate.toLocaleDateString();
+                    })()}
+                  </span>
+                  {latestRun.status && (
+                    <span
+                      style={{
+                        padding: "4px 8px",
+                        borderRadius: 4,
+                        background:
+                          latestRun.status === "completed"
+                            ? "#d1fae5"
+                            : latestRun.status === "running"
+                            ? "#dbeafe"
+                            : latestRun.status === "failed"
+                            ? "#fee2e2"
+                            : "#e5e7eb",
+                        color:
+                          latestRun.status === "completed"
+                            ? "#065f46"
+                            : latestRun.status === "running"
+                            ? "#1e40af"
+                            : latestRun.status === "failed"
+                            ? "#991b1b"
+                            : "#374151",
+                        fontSize: 11,
+                        fontWeight: 600,
+                        textTransform: "capitalize",
+                      }}
+                    >
+                      {latestRun.status}
+                    </span>
+                  )}
+                </div>
+
+                {/* Finding counts by severity */}
+                {latestFindings.length > 0 && (
+                  <>
+                    <div style={{ display: "flex", gap: 12, marginBottom: 8 }}>
+                      <div
+                        style={{
+                          padding: "6px 12px",
+                          borderRadius: 6,
+                          background: "#fee2e2",
+                          color: "#991b1b",
+                          fontSize: 13,
+                          fontWeight: 600,
+                        }}
+                      >
+                        Critical: {latestFindings.filter((f) => f.severity === "critical").length}
+                      </div>
+                      <div
+                        style={{
+                          padding: "6px 12px",
+                          borderRadius: 6,
+                          background: "#fef3c7",
+                          color: "#92400e",
+                          fontSize: 13,
+                          fontWeight: 600,
+                        }}
+                      >
+                        Warnings: {latestFindings.filter((f) => f.severity === "warning").length}
+                      </div>
+                      <div
+                        style={{
+                          padding: "6px 12px",
+                          borderRadius: 6,
+                          background: "#d1fae5",
+                          color: "#065f46",
+                          fontSize: 13,
+                          fontWeight: 600,
+                        }}
+                      >
+                        Info: {latestFindings.filter((f) => f.severity === "info").length}
+                      </div>
+                    </div>
+
+                    {/* Active vs completed counts */}
+                    <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 16 }}>
+                      Active: {latestFindings.filter((f) => {
+                        const state = f.workflow_state ?? "open";
+                        return state === "open" || state === "acknowledged";
+                      }).length} • Resolved/Dismissed: {latestFindings.filter((f) => {
+                        const state = f.workflow_state ?? "open";
+                        return state === "resolved" || state === "dismissed";
+                      }).length}
+                    </div>
+                  </>
+                )}
+              </div>
+
+              <div className="flex gap-3">
+
+                <button
+                  onClick={() => router.push(`/app/deals/${dealId}/runs/${latestRun.id}`)}
+                  className="px-4 py-2 text-base font-semibold rounded-lg border border-green-700 bg-green-600 text-white cursor-pointer hover:bg-green-700"
+                >
+                  View latest results
+                </button>
+                <button
+                  onClick={() => {
+                    if (!hasBorrower) {
+                      alert("Add at least one borrower (person or entity) to run DealSense.");
+                      return;
+                    }
+                    if (!hasFiles) {
+                      alert("Please upload files before running DealSense checks.");
+                      return;
+                    }
+                    if (!activeSubmissionId) {
+                      alert("No submission available. Please try again.");
+                      return;
+                    }
+                    setDealSenseError(null);
+                    setShowDealSenseModal(true);
+                  }}
+                  disabled={!hasFiles || !hasBorrower || !activeSubmissionId}
+                  className={`px-4 py-2 text-base font-semibold rounded-lg border ${
+                    hasFiles && hasBorrower
+                      ? "bg-white text-gray-700 border-gray-300 cursor-pointer hover:bg-gray-50"
+                      : "bg-white text-gray-400 border-gray-300 cursor-not-allowed opacity-60"
+                  }`}
+                >
+                  Run again
+                </button>
+              </div>
+              </>
+            )}
+        </div>
+      )}
+
+      {/* Deal Details Section */}
+      {deal && (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+          <h2 className="text-xl font-semibold mb-5 text-gray-900">Deal Details</h2>
           
           {saveMessage && (
             <div
@@ -1060,53 +1913,34 @@ export default function DealPage() {
             </div>
           )}
 
-          <div style={{ marginBottom: 16 }}>
-            <label
-              style={{
-                display: "block",
-                fontSize: 14,
-                fontWeight: 600,
-                marginBottom: 8,
-                color: "#374151",
-              }}
-            >
-              Deal Name
-            </label>
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Enter deal name"
-              style={{
-                width: "100%",
-                padding: "10px 12px",
-                fontSize: 14,
-                border: "1px solid rgba(0,0,0,0.2)",
-                borderRadius: 8,
-                outline: "none",
-              }}
-            />
-          </div>
-
           {/* Customers Section */}
-          <div style={{ marginBottom: 24 }}>
-            <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 16 }}>Customers</h3>
+          <div style={{ marginBottom: 32 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <h3 style={{ fontSize: 16, fontWeight: 700, margin: 0, color: "#111827" }}>Customers</h3>
+              <button
+                onClick={() => setShowAddCustomerModal(true)}
+                style={{
+                  padding: "6px 12px",
+                  fontSize: 13,
+                  fontWeight: 600,
+                  borderRadius: 8,
+                  border: "1px solid rgba(0,0,0,0.2)",
+                  background: "#10b981",
+                  color: "white",
+                  cursor: "pointer",
+                }}
+              >
+                + Add person
+              </button>
+            </div>
             
             {/* Customers List Card */}
-            <div
-              style={{
-                border: "1px solid rgba(0,0,0,0.2)",
-                borderRadius: 10,
-                padding: 20,
-                background: "white",
-                marginBottom: 16,
-              }}
-            >
-              <h4 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12, color: "#374151" }}>Added Customers</h4>
+            <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+              <h4 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12, color: "#111827" }}>Added Customers</h4>
               {partiesLoading ? (
-                <p style={{ fontSize: 14, opacity: 0.6 }}>Loading...</p>
+                <p style={{ fontSize: 14, color: "#6b7280" }}>Loading...</p>
               ) : dealParties.filter(p => p.type === "person").length === 0 ? (
-                <p style={{ fontSize: 14, opacity: 0.6 }}>No customers added yet.</p>
+                <p style={{ fontSize: 14, color: "#6b7280" }}>No customers added yet.</p>
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   {dealParties.filter(p => p.type === "person").map((party) => (
@@ -1158,200 +1992,36 @@ export default function DealPage() {
               )}
             </div>
 
-            {/* Add Customer Form Card */}
-            <div
-              style={{
-                border: "1px solid rgba(0,0,0,0.2)",
-                borderRadius: 10,
-                padding: 20,
-                background: "white",
-              }}
-            >
-              <h4 style={{ fontSize: 14, fontWeight: 600, marginBottom: 16, color: "#374151" }}>Add Customer</h4>
-              <div>
-                <div style={{ marginBottom: 12 }}>
-                  <input
-                    type="text"
-                    value={newCustomerName}
-                    onChange={(e) => setNewCustomerName(e.target.value)}
-                    placeholder="Customer name"
-                    style={{
-                      width: "100%",
-                      padding: "8px 12px",
-                      fontSize: 14,
-                      border: "1px solid rgba(0,0,0,0.2)",
-                      borderRadius: 8,
-                      outline: "none",
-                    }}
-                  />
-                </div>
-                <div>
-                  <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, color: "#374151" }}>Roles</div>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                    {availableRoles.map((role) => (
-                      <label
-                        key={role.value}
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 4,
-                          fontSize: 13,
-                          cursor: "pointer",
-                        }}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={newCustomerRoles.includes(role.value)}
-                          onChange={(e) => {
-                            if (e.target.checked) {
-                              setNewCustomerRoles([...newCustomerRoles, role.value]);
-                            } else {
-                              setNewCustomerRoles(newCustomerRoles.filter(r => r !== role.value));
-                            }
-                          }}
-                          style={{ cursor: "pointer" }}
-                        />
-                        <span>{role.label}</span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-                <div style={{ marginTop: 12 }}>
-                  <button
-                    onClick={async () => {
-                      if (!newCustomerName.trim() || addingParty || newCustomerRoles.length === 0) return;
-                      setAddingParty(true);
-                      const supabase = supabaseBrowser();
-                      
-                      try {
-                        // Get organization_id
-                        const { data: { user } } = await supabase.auth.getUser();
-                        if (!user) {
-                          alert("Not authenticated. Please refresh and try again.");
-                          setAddingParty(false);
-                          return;
-                        }
-                        
-                        const { data: orgMember } = await supabase
-                          .from("organization_members")
-                          .select("organization_id")
-                          .eq("user_id", user.id)
-                          .maybeSingle();
-                        
-                        if (!orgMember?.organization_id) {
-                          alert("Error: Could not find organization. Please contact support.");
-                          setAddingParty(false);
-                          return;
-                        }
-                        
-                        // Upsert entity
-                        const entityId = await upsertEntity(orgMember.organization_id, "person", newCustomerName.trim());
-                        if (!entityId) {
-                          alert("Error creating entity. Please try again.");
-                          setAddingParty(false);
-                          return;
-                        }
-                        
-                        // Insert deal_parties with entity_id and roles
-                        const { data, error } = await supabase
-                          .from("deal_parties")
-                          .insert({
-                            deal_id: dealId,
-                            entity_id: entityId,
-                            roles: newCustomerRoles,
-                            // Legacy columns for backward compatibility
-                            type: "person",
-                            name: newCustomerName.trim(),
-                            role: newCustomerRoles[0] || null,
-                          })
-                          .select(`
-                            id,
-                            deal_id,
-                            roles,
-                            notes,
-                            entity_id,
-                            entities:entity_id (
-                              id,
-                              entity_type,
-                              display_name,
-                              email,
-                              phone
-                            ),
-                            type,
-                            name,
-                            role
-                          `)
-                          .single();
-                        
-                        if (error) {
-                          console.error("Error adding customer:", error);
-                          alert("Error adding customer. Please try again.");
-                        } else {
-                          // Normalize the response
-                          const entity = Array.isArray(data.entities) ? data.entities[0] : data.entities;
-                          const normalized = {
-                            id: data.id,
-                            deal_id: data.deal_id,
-                            roles: data.roles || [],
-                            notes: data.notes,
-                            entityId: entity?.id || null,
-                            entity_type: entity?.entity_type || data.type,
-                            display_name: entity?.display_name || data.name,
-                            email: entity?.email || null,
-                            phone: entity?.phone || null,
-                            type: entity?.entity_type || data.type,
-                            name: entity?.display_name || data.name,
-                            role: data.roles?.[0] || data.role || null,
-                          };
-                          setDealParties([...dealParties, normalized]);
-                          setNewCustomerName("");
-                          setNewCustomerRoles([]);
-                        }
-                      } catch (err) {
-                        console.error("Error:", err);
-                        alert("An unexpected error occurred.");
-                      }
-                      setAddingParty(false);
-                    }}
-                    disabled={!newCustomerName.trim() || addingParty || newCustomerRoles.length === 0}
-                    style={{
-                      padding: "8px 16px",
-                      fontSize: 14,
-                      fontWeight: 600,
-                      borderRadius: 8,
-                      border: "1px solid rgba(0,0,0,0.2)",
-                      background: "#10b981",
-                      color: "white",
-                      cursor: !newCustomerName.trim() || addingParty || newCustomerRoles.length === 0 ? "not-allowed" : "pointer",
-                      opacity: !newCustomerName.trim() || addingParty || newCustomerRoles.length === 0 ? 0.6 : 1,
-                    }}
-                  >
-                    Add
-                  </button>
-                </div>
-              </div>
-            </div>
           </div>
 
           {/* Entities Section */}
-          <div style={{ marginBottom: 24 }}>
-            <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 16 }}>Entities</h3>
+          <div style={{ marginBottom: 32 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <h3 style={{ fontSize: 16, fontWeight: 700, margin: 0, color: "#111827" }}>Entities</h3>
+              <button
+                onClick={() => setShowAddEntityModal(true)}
+                style={{
+                  padding: "6px 12px",
+                  fontSize: 13,
+                  fontWeight: 600,
+                  borderRadius: 8,
+                  border: "1px solid rgba(0,0,0,0.2)",
+                  background: "#10b981",
+                  color: "white",
+                  cursor: "pointer",
+                }}
+              >
+                + Add entity
+              </button>
+            </div>
             
             {/* Entities List Card */}
-            <div
-              style={{
-                border: "1px solid rgba(0,0,0,0.2)",
-                borderRadius: 10,
-                padding: 20,
-                background: "white",
-                marginBottom: 16,
-              }}
-            >
-              <h4 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12, color: "#374151" }}>Added Entities</h4>
+            <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+              <h4 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12, color: "#111827" }}>Added Entities</h4>
               {partiesLoading ? (
-                <p style={{ fontSize: 14, opacity: 0.6 }}>Loading...</p>
+                <p style={{ fontSize: 14, color: "#6b7280" }}>Loading...</p>
               ) : dealParties.filter(p => p.type === "entity" || p.entity_type === "company" || p.entity_type === "trust" || p.entity_type === "other").length === 0 ? (
-                <p style={{ fontSize: 14, opacity: 0.6 }}>No entities added yet.</p>
+                <p style={{ fontSize: 14, color: "#6b7280" }}>No entities added yet.</p>
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   {dealParties.filter(p => p.type === "entity" || p.entity_type === "company" || p.entity_type === "trust" || p.entity_type === "other").map((party) => (
@@ -1403,179 +2073,6 @@ export default function DealPage() {
               )}
             </div>
 
-            {/* Add Entity Form Card */}
-            <div
-              style={{
-                border: "1px solid rgba(0,0,0,0.2)",
-                borderRadius: 10,
-                padding: 20,
-                background: "white",
-              }}
-            >
-              <h4 style={{ fontSize: 14, fontWeight: 600, marginBottom: 16, color: "#374151" }}>Add Entity</h4>
-              <div>
-                <div style={{ marginBottom: 12 }}>
-                  <input
-                    type="text"
-                    value={newEntityName}
-                    onChange={(e) => setNewEntityName(e.target.value)}
-                    placeholder="Entity name"
-                    style={{
-                      width: "100%",
-                      padding: "8px 12px",
-                      fontSize: 14,
-                      border: "1px solid rgba(0,0,0,0.2)",
-                      borderRadius: 8,
-                      outline: "none",
-                    }}
-                  />
-                </div>
-                <div>
-                  <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, color: "#374151" }}>Roles</div>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                    {availableRoles.map((role) => (
-                      <label
-                        key={role.value}
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 4,
-                          fontSize: 13,
-                          cursor: "pointer",
-                        }}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={newEntityRoles.includes(role.value)}
-                          onChange={(e) => {
-                            if (e.target.checked) {
-                              setNewEntityRoles([...newEntityRoles, role.value]);
-                            } else {
-                              setNewEntityRoles(newEntityRoles.filter(r => r !== role.value));
-                            }
-                          }}
-                          style={{ cursor: "pointer" }}
-                        />
-                        <span>{role.label}</span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-                <div style={{ marginTop: 12 }}>
-                  <button
-                    onClick={async () => {
-                      if (!newEntityName.trim() || addingParty || newEntityRoles.length === 0) return;
-                      setAddingParty(true);
-                      const supabase = supabaseBrowser();
-                      
-                      try {
-                        // Get organization_id
-                        const { data: { user } } = await supabase.auth.getUser();
-                        if (!user) {
-                          alert("Not authenticated. Please refresh and try again.");
-                          setAddingParty(false);
-                          return;
-                        }
-                        
-                        const { data: orgMember } = await supabase
-                          .from("organization_members")
-                          .select("organization_id")
-                          .eq("user_id", user.id)
-                          .maybeSingle();
-                        
-                        if (!orgMember?.organization_id) {
-                          alert("Error: Could not find organization. Please contact support.");
-                          setAddingParty(false);
-                          return;
-                        }
-                        
-                        // Upsert entity (use 'company' as default entity_type for entities section)
-                        const entityId = await upsertEntity(orgMember.organization_id, "company", newEntityName.trim());
-                        if (!entityId) {
-                          alert("Error creating entity. Please try again.");
-                          setAddingParty(false);
-                          return;
-                        }
-                        
-                        // Insert deal_parties with entity_id and roles
-                        const { data, error } = await supabase
-                          .from("deal_parties")
-                          .insert({
-                            deal_id: dealId,
-                            entity_id: entityId,
-                            roles: newEntityRoles,
-                            // Legacy columns for backward compatibility
-                            type: "entity",
-                            name: newEntityName.trim(),
-                            role: newEntityRoles[0] || null,
-                          })
-                          .select(`
-                            id,
-                            deal_id,
-                            roles,
-                            notes,
-                            entity_id,
-                            entities:entity_id (
-                              id,
-                              entity_type,
-                              display_name,
-                              email,
-                              phone
-                            ),
-                            type,
-                            name,
-                            role
-                          `)
-                          .single();
-                        
-                        if (error) {
-                          console.error("Error adding entity:", error);
-                          alert("Error adding entity. Please try again.");
-                        } else {
-                          // Normalize the response
-                          const entity = Array.isArray(data.entities) ? data.entities[0] : data.entities;
-                          const normalized = {
-                            id: data.id,
-                            deal_id: data.deal_id,
-                            roles: data.roles || [],
-                            notes: data.notes,
-                            entityId: entity?.id || null,
-                            entity_type: entity?.entity_type || data.type,
-                            display_name: entity?.display_name || data.name,
-                            email: entity?.email || null,
-                            phone: entity?.phone || null,
-                            type: entity?.entity_type || data.type,
-                            name: entity?.display_name || data.name,
-                            role: data.roles?.[0] || data.role || null,
-                          };
-                          setDealParties([...dealParties, normalized]);
-                          setNewEntityName("");
-                          setNewEntityRoles([]);
-                        }
-                      } catch (err) {
-                        console.error("Error:", err);
-                        alert("An unexpected error occurred.");
-                      }
-                      setAddingParty(false);
-                    }}
-                    disabled={!newEntityName.trim() || addingParty || newEntityRoles.length === 0}
-                    style={{
-                      padding: "8px 16px",
-                      fontSize: 14,
-                      fontWeight: 600,
-                      borderRadius: 8,
-                      border: "1px solid rgba(0,0,0,0.2)",
-                      background: "#10b981",
-                      color: "white",
-                      cursor: !newEntityName.trim() || addingParty || newEntityRoles.length === 0 ? "not-allowed" : "pointer",
-                      opacity: !newEntityName.trim() || addingParty || newEntityRoles.length === 0 ? 0.6 : 1,
-                    }}
-                  >
-                    Add
-                  </button>
-                </div>
-              </div>
-            </div>
           </div>
 
           <div style={{ marginBottom: 16 }}>
@@ -1631,25 +2128,18 @@ export default function DealPage() {
       )}
 
       {/* Upload Pack Section */}
-      <div
-        style={{
-          border: "1px solid rgba(0,0,0,0.2)",
-          borderRadius: 10,
-          padding: 20,
-          background: "white",
-          marginBottom: 24,
-        }}
-      >
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-          <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 0 }}>Upload Pack</h2>
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+        <div className="flex justify-between items-center mb-4">
+          <h2 className="text-xl font-semibold mb-0 text-gray-900">Upload Pack</h2>
           <button
             onClick={handleFileSelectButton}
             style={{
-              padding: "8px 16px",
-              borderRadius: 10,
+              padding: "6px 12px",
+              fontSize: 13,
+              fontWeight: 600,
+              borderRadius: 8,
               border: "1px solid rgba(0,0,0,0.2)",
               cursor: "pointer",
-              fontWeight: 600,
               background: "white",
             }}
           >
@@ -1681,23 +2171,23 @@ export default function DealPage() {
             <span>Details</span>
           </button>
           {showDetails && (
-            <div
-              style={{
-                fontSize: 12,
-                background: "#f9fafb",
-                border: "1px solid rgba(0,0,0,0.1)",
-                borderRadius: 8,
-                padding: 12,
+        <div
+          style={{
+            fontSize: 12,
+            background: "#f9fafb",
+            border: "1px solid rgba(0,0,0,0.1)",
+            borderRadius: 8,
+            padding: 12,
                 marginTop: 8,
-              }}
-            >
-              <div style={{ marginBottom: 4 }}>
-                <strong>Deal ID:</strong> <span style={{ fontFamily: "monospace" }}>{dealId}</span>
-              </div>
+          }}
+        >
+          <div style={{ marginBottom: 4 }}>
+            <strong>Deal ID:</strong> <span style={{ fontFamily: "monospace" }}>{dealId}</span>
+          </div>
               <div>
-                <strong>Submission ID:</strong> <span style={{ fontFamily: "monospace" }}>{activeSubmissionId ?? "—"}</span>
-              </div>
-            </div>
+            <strong>Submission ID:</strong> <span style={{ fontFamily: "monospace" }}>{activeSubmissionId ?? "—"}</span>
+          </div>
+          </div>
           )}
         </div>
 
@@ -1723,90 +2213,164 @@ export default function DealPage() {
         )}
 
         {filesLoading ? (
-          <p style={{ fontSize: 14, opacity: 0.6 }}>Loading files...</p>
-        ) : files.length === 0 ? (
-          <p style={{ fontSize: 14, opacity: 0.6 }}>No files uploaded yet.</p>
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-            {/* Category: Financials */}
-            <div>
-              <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 12, color: "#374151" }}>Financials</h3>
-              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                {files.filter(f => f.category === "financials").map((file) => (
-                  <FileItem key={file.id} file={file} getDownloadUrl={getDownloadUrl} onDelete={handleDeleteFile} />
-                ))}
-                {files.filter(f => f.category === "financials").length === 0 && (
-                  <p style={{ fontSize: 13, opacity: 0.5, fontStyle: "italic" }}>No files in this category</p>
-                )}
-              </div>
-            </div>
+          <p style={{ fontSize: 14, color: "#6b7280" }}>Loading files...</p>
+        ) : (() => {
+          const categories = [
+            { key: "financials", label: "Financials" },
+            { key: "forecasts", label: "Forecasts" },
+            { key: "business_plan", label: "Business Plan" },
+            { key: "broker_app", label: "Broker Application/SoP" },
+            { key: "security", label: "Security" },
+            { key: "other", label: "Other" },
+          ];
 
-            {/* Category: Forecasts */}
-            <div>
-              <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 12, color: "#374151" }}>Forecasts</h3>
-              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                {files.filter(f => f.category === "forecasts").map((file) => (
-                  <FileItem key={file.id} file={file} getDownloadUrl={getDownloadUrl} onDelete={handleDeleteFile} />
-                ))}
-                {files.filter(f => f.category === "forecasts").length === 0 && (
-                  <p style={{ fontSize: 13, opacity: 0.5, fontStyle: "italic" }}>No files in this category</p>
-                )}
-              </div>
-            </div>
+          const categoryFiles = categories.map(cat => ({
+            ...cat,
+            files: files.filter(f => f.category === cat.key),
+            count: files.filter(f => f.category === cat.key).length,
+          }));
 
-            {/* Category: Business Plan */}
-            <div>
-              <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 12, color: "#374151" }}>Business Plan</h3>
-              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                {files.filter(f => f.category === "business_plan").map((file) => (
-                  <FileItem key={file.id} file={file} getDownloadUrl={getDownloadUrl} onDelete={handleDeleteFile} />
-                ))}
-                {files.filter(f => f.category === "business_plan").length === 0 && (
-                  <p style={{ fontSize: 13, opacity: 0.5, fontStyle: "italic" }}>No files in this category</p>
-                )}
-              </div>
-            </div>
+          const hasAnyFiles = files.length > 0;
+          const emptyCategories = categoryFiles.filter(cat => cat.count === 0);
 
-            {/* Category: Broker Application/SoP */}
-            <div>
-              <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 12, color: "#374151" }}>Broker Application/SoP</h3>
-              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                {files.filter(f => f.category === "broker_app").map((file) => (
-                  <FileItem key={file.id} file={file} getDownloadUrl={getDownloadUrl} onDelete={handleDeleteFile} />
-                ))}
-                {files.filter(f => f.category === "broker_app").length === 0 && (
-                  <p style={{ fontSize: 13, opacity: 0.5, fontStyle: "italic" }}>No files in this category</p>
-                )}
-              </div>
-            </div>
+          if (!hasAnyFiles) {
+            return <p style={{ fontSize: 14, color: "#6b7280" }}>No files uploaded yet.</p>;
+          }
 
-            {/* Category: Security */}
-            <div>
-              <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 12, color: "#374151" }}>Security</h3>
-              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                {files.filter(f => f.category === "security").map((file) => (
-                  <FileItem key={file.id} file={file} getDownloadUrl={getDownloadUrl} onDelete={handleDeleteFile} />
-                ))}
-                {files.filter(f => f.category === "security").length === 0 && (
-                  <p style={{ fontSize: 13, opacity: 0.5, fontStyle: "italic" }}>No files in this category</p>
-                )}
-              </div>
-            </div>
+          const visibleCategories = showEmptyCategories 
+            ? categoryFiles 
+            : categoryFiles.filter(cat => cat.count > 0);
 
-            {/* Category: Other */}
-            <div>
-              <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 12, color: "#374151" }}>Other</h3>
-              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                {files.filter(f => f.category === "other").map((file) => (
+          return (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {emptyCategories.length > 0 && (
+                <label
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 8,
+                    cursor: "pointer",
+                    marginBottom: 4,
+                  }}
+                >
+                  <span style={{ fontSize: 13, color: "#374151" }}>Show empty categories</span>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={showEmptyCategories}
+                    aria-label="Show empty categories"
+                    onClick={() => setShowEmptyCategories(!showEmptyCategories)}
+                    onKeyDown={(e) => {
+                      if (e.key === " " || e.key === "Enter") {
+                        e.preventDefault();
+                        setShowEmptyCategories(!showEmptyCategories);
+                      }
+                    }}
+                    style={{
+                      position: "relative",
+                      width: 44,
+                      height: 24,
+                      borderRadius: 12,
+                      background: showEmptyCategories ? "#10b981" : "#d1d5db",
+                      border: "none",
+                      cursor: "pointer",
+                      outline: "none",
+                      transition: "background-color 0.2s",
+                      padding: 0,
+                    }}
+                    onMouseEnter={(e) => {
+                      if (!showEmptyCategories) {
+                        e.currentTarget.style.background = "#9ca3af";
+                      }
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = showEmptyCategories ? "#10b981" : "#d1d5db";
+                    }}
+                  >
+                    <span
+                      style={{
+                        position: "absolute",
+                        top: 2,
+                        left: showEmptyCategories ? 22 : 2,
+                        width: 20,
+                        height: 20,
+                        borderRadius: "50%",
+                        background: "white",
+                        transition: "left 0.2s",
+                        boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+                      }}
+                    />
+                  </button>
+                </label>
+              )}
+              {visibleCategories.map((category) => {
+                const isExpanded = expandedCategories.has(category.key);
+                return (
+                  <div key={category.key} style={{ borderRadius: 8, background: "white", boxShadow: "0 2px 4px rgba(0,0,0,0.08)", marginBottom: 8 }}>
+                    <button
+                      onClick={() => {
+                        const newExpanded = new Set(expandedCategories);
+                        if (isExpanded) {
+                          newExpanded.delete(category.key);
+                        } else {
+                          newExpanded.add(category.key);
+                        }
+                        setExpandedCategories(newExpanded);
+                      }}
+                      style={{
+                        width: "100%",
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        padding: "8px 12px",
+                        background: "transparent",
+                        border: "none",
+                        cursor: "pointer",
+                        textAlign: "left",
+                      }}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span
+                          style={{
+                            transform: isExpanded ? "rotate(90deg)" : "rotate(0deg)",
+                            transition: "transform 0.2s",
+                            display: "inline-block",
+                            fontSize: 12,
+                            color: "#6b7280",
+                          }}
+                        >
+                          ▶
+                        </span>
+                        <span style={{ fontSize: 14, fontWeight: 600, color: "#374151" }}>
+                          {category.label}
+                        </span>
+                        <span
+                          style={{
+                            padding: "2px 6px",
+                            borderRadius: 4,
+                            background: "#e5e7eb",
+                            color: "#6b7280",
+                            fontSize: 11,
+                            fontWeight: 600,
+                          }}
+                        >
+                          {category.count}
+                        </span>
+              </div>
+                    </button>
+                    {isExpanded && (
+                      <div style={{ padding: "0 12px 8px 12px", display: "flex", flexDirection: "column", gap: 6 }}>
+                        {category.files.map((file) => (
                   <FileItem key={file.id} file={file} getDownloadUrl={getDownloadUrl} onDelete={handleDeleteFile} />
                 ))}
-                {files.filter(f => f.category === "other").length === 0 && (
-                  <p style={{ fontSize: 13, opacity: 0.5, fontStyle: "italic" }}>No files in this category</p>
+                      </div>
                 )}
               </div>
+                );
+              })}
             </div>
-          </div>
-        )}
+          );
+        })()}
       </div>
 
       {/* Upload Modal */}
@@ -1997,79 +2561,127 @@ export default function DealPage() {
         </div>
       )}
 
-      {/* DealSense Results Section */}
-      <div
-        style={{
-          border: "1px solid rgba(0,0,0,0.2)",
-          borderRadius: 10,
-          padding: 20,
-          background: "white",
-        }}
-      >
-        <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 16 }}>DealSense Results</h2>
-        
-        <p style={{ fontSize: 14, opacity: 0.6, marginBottom: 20 }}>
-          Run DealSense to see checks
-        </p>
+      {/* Rename Deal Modal - Portal */}
+      {(() => {
+        const renameModal = showRenameModal ? (
+        <div
+          className="fixed inset-0 z-50 bg-black/40 grid place-items-center p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !renaming) {
+              setShowRenameModal(false);
+              setRenameError(null);
+            }
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Escape" && !renaming) {
+              setShowRenameModal(false);
+              setRenameError(null);
+            }
+          }}
+        >
+          <div
+            style={{
+              background: "white",
+              borderRadius: 12,
+              padding: 24,
+              maxWidth: 400,
+              width: "90%",
+              boxShadow: "0 10px 25px rgba(0,0,0,0.15)",
+            }}
+          >
+            <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 16 }}>
+              Rename deal
+            </h2>
 
-        {/* Status Pills */}
-        <div style={{ display: "flex", gap: 12, marginBottom: 20 }}>
-          <div
-            style={{
-              padding: "6px 12px",
-              borderRadius: 6,
-              background: "#fee2e2",
-              color: "#991b1b",
-              fontSize: 13,
-              fontWeight: 600,
-            }}
-          >
-            Critical: 0
-          </div>
-          <div
-            style={{
-              padding: "6px 12px",
-              borderRadius: 6,
-              background: "#fef3c7",
-              color: "#92400e",
-              fontSize: 13,
-              fontWeight: 600,
-            }}
-          >
-            Warnings: 0
-          </div>
-          <div
-            style={{
-              padding: "6px 12px",
-              borderRadius: 6,
-              background: "#d1fae5",
-              color: "#065f46",
-              fontSize: 13,
-              fontWeight: 600,
-            }}
-          >
-            Passed: 0
+            {renameError && (
+              <div
+                style={{
+                  padding: 12,
+                  background: "#fee2e2",
+                  borderRadius: 8,
+                  marginBottom: 16,
+                  border: "1px solid #dc2626",
+                }}
+              >
+                <p style={{ fontSize: 13, color: "#991b1b", margin: 0 }}>
+                  {renameError}
+                </p>
+              </div>
+            )}
+
+            <div style={{ marginBottom: 20 }}>
+              <input
+                ref={renameInputRef}
+                type="text"
+                value={renameName}
+                onChange={(e) => setRenameName(e.target.value)}
+                placeholder="Enter deal name"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !renaming && renameName.trim() && renameName.trim() !== (deal?.name || name)) {
+                    handleRenameDeal();
+                  }
+                  if (e.key === "Escape" && !renaming) {
+                    setShowRenameModal(false);
+                    setRenameError(null);
+                  }
+                }}
+                style={{
+                  width: "100%",
+                  padding: "10px 12px",
+                  fontSize: 14,
+                  border: "1px solid rgba(0,0,0,0.2)",
+                  borderRadius: 8,
+                  outline: "none",
+                }}
+              />
+            </div>
+
+            <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
+              <button
+                onClick={() => {
+                  if (!renaming) {
+                    setShowRenameModal(false);
+                    setRenameError(null);
+                  }
+                }}
+                disabled={renaming}
+                style={{
+                  padding: "10px 20px",
+                  fontSize: 14,
+                  fontWeight: 600,
+                  borderRadius: 8,
+                  border: "1px solid rgba(0,0,0,0.2)",
+                  background: "white",
+                  cursor: renaming ? "not-allowed" : "pointer",
+                  opacity: renaming ? 0.6 : 1,
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleRenameDeal}
+                disabled={renaming || !renameName.trim() || renameName.trim() === (deal?.name || name)}
+                style={{
+                  padding: "10px 20px",
+                  fontSize: 14,
+                  fontWeight: 600,
+                  borderRadius: 8,
+                  border: "1px solid rgba(0,0,0,0.2)",
+                  background: renaming || !renameName.trim() || renameName.trim() === (deal?.name || name) ? "#9ca3af" : "#10b981",
+                  color: "white",
+                  cursor: renaming || !renameName.trim() || renameName.trim() === (deal?.name || name) ? "not-allowed" : "pointer",
+                  opacity: renaming || !renameName.trim() || renameName.trim() === (deal?.name || name) ? 0.6 : 1,
+                }}
+              >
+                {renaming ? "Saving..." : "Save"}
+              </button>
+            </div>
           </div>
         </div>
+        ) : null;
 
-        {/* Issues List */}
-        <div>
-          <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>Issues</h3>
-          <div
-            style={{
-              border: "1px solid rgba(0,0,0,0.1)",
-              borderRadius: 8,
-              padding: 20,
-              background: "#f9fafb",
-              textAlign: "center",
-            }}
-          >
-            <p style={{ fontSize: 13, opacity: 0.6 }}>
-              No issues found. Run DealSense checks to analyze your deal.
-            </p>
+        return mounted && renameModal ? createPortal(renameModal, document.body) : null;
+      })()}
           </div>
-        </div>
-      </div>
-    </main>
   );
 }

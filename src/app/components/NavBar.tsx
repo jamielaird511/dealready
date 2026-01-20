@@ -81,7 +81,7 @@ export default function NavBar() {
 
   return (
     <header className="sticky top-0 z-50 border-b border-gray-200 bg-white">
-      <nav className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
+      <nav className="mx-auto flex max-w-5xl items-center justify-between px-6 md:px-8 py-3">
         <Link href="/" className="inline-block">
           <Image
             src="/brand/dealready-logo.svg"

@@ -163,25 +163,17 @@ export default function RunResultsPage() {
 
   if (loading) {
     return (
-      <main style={{ maxWidth: 1200, margin: "40px auto", padding: 16 }}>
+      <div className="space-y-8">
         <p>Loading run results...</p>
-      </main>
+      </div>
     );
   }
 
   if (error) {
     if (error === "not_found") {
       return (
-        <main style={{ maxWidth: 1200, margin: "40px auto", padding: 16 }}>
-          <div
-            style={{
-              border: "1px solid rgba(0,0,0,0.2)",
-              borderRadius: 10,
-              padding: 40,
-              background: "white",
-              textAlign: "center",
-            }}
-          >
+        <div className="space-y-8">
+          <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 text-center">
             <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 12 }}>
               Run not found
             </h2>
@@ -199,24 +191,16 @@ export default function RunResultsPage() {
                 background: "white",
               }}
             >
-              Back to Deal
+              Back to Deal Details
             </button>
           </div>
-        </main>
+        </div>
       );
     }
 
     return (
-      <main style={{ maxWidth: 1200, margin: "40px auto", padding: 16 }}>
-        <div
-          style={{
-            border: "1px solid rgba(0,0,0,0.2)",
-            borderRadius: 10,
-            padding: 40,
-            background: "white",
-            textAlign: "center",
-          }}
-        >
+      <div className="space-y-8">
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 text-center">
           <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 12 }}>
             Unable to load run
           </h2>
@@ -237,7 +221,7 @@ export default function RunResultsPage() {
             Back to Deal
           </button>
         </div>
-      </main>
+      </div>
     );
   }
 
@@ -306,9 +290,9 @@ export default function RunResultsPage() {
   }
 
   return (
-    <main style={{ maxWidth: 1200, margin: "40px auto", padding: 16 }}>
+    <div className="space-y-8">
       {/* Header */}
-      <div style={{ marginBottom: 24 }}>
+      <div>
         <button
           onClick={() => router.push(dealId ? `/app/deals/${dealId}` : "/app")}
           style={{
@@ -320,21 +304,13 @@ export default function RunResultsPage() {
             marginBottom: 16,
           }}
         >
-          ← Back to Deal
+          ← Back to Deal Details
         </button>
         <h1 style={{ fontSize: 28, fontWeight: 800, marginBottom: 0 }}>DealSense Run Results</h1>
       </div>
 
       {/* Run Status Card */}
-      <div
-        style={{
-          border: "1px solid rgba(0,0,0,0.2)",
-          borderRadius: 10,
-          padding: 20,
-          background: "white",
-          marginBottom: 24,
-        }}
-      >
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
           <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 0 }}>Run Status</h2>
           <span
@@ -368,15 +344,7 @@ export default function RunResultsPage() {
 
       {/* Findings Summary */}
       {(run.status === "completed" || run.status === "failed") && (
-        <div
-          style={{
-            border: "1px solid rgba(0,0,0,0.2)",
-            borderRadius: 10,
-            padding: 20,
-            background: "white",
-            marginBottom: 24,
-          }}
-        >
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
           <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 16 }}>Findings Summary</h2>
           <div style={{ display: "flex", gap: 12, marginBottom: 20 }}>
             <div
@@ -419,15 +387,7 @@ export default function RunResultsPage() {
 
           {/* Findings List */}
           {findings.length === 0 ? (
-            <div
-              style={{
-                border: "1px solid rgba(0,0,0,0.1)",
-                borderRadius: 8,
-                padding: 20,
-                background: "#f9fafb",
-                textAlign: "center",
-              }}
-            >
+            <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 text-center">
               <p style={{ fontSize: 13, opacity: 0.6 }}>
                 No findings found.
               </p>
@@ -551,15 +511,7 @@ export default function RunResultsPage() {
 
       {/* Loading/Processing State */}
       {(run.status === "queued" || run.status === "running") && (
-        <div
-          style={{
-            border: "1px solid rgba(0,0,0,0.2)",
-            borderRadius: 10,
-            padding: 40,
-            background: "white",
-            textAlign: "center",
-          }}
-        >
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 text-center">
           <p style={{ fontSize: 14, opacity: 0.6, marginBottom: 8 }}>
             {run.status === "queued" ? "Starting..." : "Run is processing..."}
           </p>
@@ -568,6 +520,6 @@ export default function RunResultsPage() {
           </p>
         </div>
       )}
-    </main>
+    </div>
   );
 }

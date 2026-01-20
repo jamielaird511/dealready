@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createSupabaseServerClient, createSupabaseAdminClient } from "@/lib/supabase/server";
 
 export async function PATCH(
   req: NextRequest,
@@ -18,12 +18,25 @@ export async function PATCH(
   }
 
   try {
+    // Use normal server client only for authentication
     const supabase = await createSupabaseServerClient();
 
     // Check authentication
     const { data: { user }, error: authError } = await supabase.auth.getUser();
     if (authError || !user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    // Create admin client for database operations (bypasses RLS)
+    let adminClient;
+    try {
+      adminClient = createSupabaseAdminClient();
+    } catch (err) {
+      console.error("[DealSense PATCH Finding API] Missing service role key:", err);
+      return NextResponse.json(
+        { error: "Server configuration error: missing service role key" },
+        { status: 500 }
+      );
     }
 
     // Parse request body
@@ -65,20 +78,10 @@ export async function PATCH(
       return NextResponse.json({ error: "No valid fields to update" }, { status: 400 });
     }
 
-    // Load finding to validate org access
-    const { data: finding, error: findingError } = await supabase
+    // Load finding to get run_id (using admin client)
+    const { data: finding, error: findingError } = await adminClient
       .from("submission_run_findings")
-      .select(`
-        id,
-        run_id,
-        submission_runs!inner (
-          id,
-          submissions:submission_id (
-            id,
-            org_id
-          )
-        )
-      `)
+      .select("id, run_id")
       .eq("id", findingId)
       .maybeSingle();
 
@@ -91,14 +94,29 @@ export async function PATCH(
       return NextResponse.json({ error: "Finding not found" }, { status: 404 });
     }
 
-    // Validate org membership
-    const run = (finding as any).submission_runs;
-    const submission = run?.submissions;
+    // Load run to get submission and org_id (using admin client)
+    const { data: run, error: runError } = await adminClient
+      .from("submission_runs")
+      .select("id, submission_id, submissions ( id, org_id )")
+      .eq("id", finding.run_id)
+      .maybeSingle();
+
+    if (runError) {
+      console.error("[DealSense PATCH Finding API] Error loading run:", runError);
+      return NextResponse.json({ error: "Failed to load run" }, { status: 500 });
+    }
+
+    if (!run) {
+      return NextResponse.json({ error: "Run not found" }, { status: 404 });
+    }
+
+    const submission = (run as any).submissions;
     if (!submission || !submission.org_id) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { data: membership, error: membershipError } = await supabase
+    // Validate org membership (using admin client, but still enforcing authorization)
+    const { data: membership, error: membershipError } = await adminClient
       .from("organization_members")
       .select("organization_id")
       .eq("user_id", user.id)
@@ -109,15 +127,15 @@ export async function PATCH(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // Update the finding
+    // Update the finding (using admin client)
     updates.updated_at = new Date().toISOString();
 
-    const { data: updatedFinding, error: updateError } = await supabase
+    const { data: updatedFinding, error: updateError } = await adminClient
       .from("submission_run_findings")
       .update(updates)
       .eq("id", findingId)
-      .select()
-      .single();
+      .select("*")
+      .maybeSingle();
 
     if (updateError) {
       console.error("[DealSense PATCH Finding API] Error updating finding:", updateError);
@@ -125,6 +143,10 @@ export async function PATCH(
         { error: "Failed to update finding", details: updateError.message },
         { status: 500 }
       );
+    }
+
+    if (!updatedFinding) {
+      return NextResponse.json({ error: "Finding not found" }, { status: 404 });
     }
 
     return NextResponse.json({ finding: updatedFinding });
