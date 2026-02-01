@@ -23,8 +23,8 @@ type DealRow = { id?: string; name?: string; status?: string; notes?: string };
 type DealPartyRaw = { id: string; deal_id?: string; roles?: string[]; role?: string | null; notes?: string | null; entities?: unknown; type?: string | null; name?: string | null };
 type DealPartyRow = { id: string; roles?: string[]; role?: string | null };
 type DealPartyNormalized = { id: string; deal_id?: string; roles?: string[]; role?: string | null; notes?: string | null; entityId?: string | null; entity_type?: string | null; display_name?: string | null; email?: string | null; phone?: string | null; type?: string | null; name?: string | null };
-type RunRow = { id?: string; created_at?: string; status?: string };
-type FindingRow = { severity?: string; workflow_state?: string };
+type RunRow = { id?: string; created_at?: string; status?: string; score?: number; assessment_status?: string; assessed_at?: string; top_fixes?: string[] };
+type FindingRow = { severity?: string; workflow_state?: string; title?: string; message?: string; fix?: string; score_impact?: number };
 type SupabaseErrorLike = { message?: string; details?: unknown; hint?: string; code?: string };
 
 function getErrorMessage(e: unknown, fallback: string): string {
@@ -399,6 +399,7 @@ export default function DealPage() {
   const [latestFindings, setLatestFindings] = useState<FindingRow[]>([]);
   const [latestRunLoading, setLatestRunLoading] = useState(false);
   const [latestRunError, setLatestRunError] = useState<string | null>(null);
+  const [runAssessmentLoading, setRunAssessmentLoading] = useState(false);
 
   async function loadFilesWithChunkCounts(submissionId: string): Promise<SubmissionFileRow[]> {
     const supabase = supabaseBrowser();
@@ -635,63 +636,69 @@ export default function DealPage() {
     }
   }, [files, filesLoading]);
 
-  // Load latest DealSense run and findings
-  useEffect(() => {
-    async function loadLatestRun() {
-      if (!activeSubmissionId) {
+  async function refreshLatestRun() {
+    if (!activeSubmissionId) {
+      setLatestRun(null);
+      setLatestFindings([]);
+      return;
+    }
+    setLatestRunLoading(true);
+    setLatestRunError(null);
+    const supabase = supabaseBrowser();
+    try {
+      const { data: runs, error: runsError } = await supabase
+        .from("submission_runs")
+        .select("*")
+        .eq("submission_id", activeSubmissionId)
+        .order("created_at", { ascending: false })
+        .limit(1);
+
+      if (runsError) {
+        console.error("Error loading latest run:", runsError);
+        setLatestRunError("Couldn't load run status");
         setLatestRun(null);
         setLatestFindings([]);
         return;
       }
 
-      setLatestRunLoading(true);
-      setLatestRunError(null);
-      const supabase = supabaseBrowser();
+      const latest = runs?.[0] || null;
+      setLatestRun(latest);
 
-      try {
-        // Get latest run for this submission
-        const { data: runs, error: runsError } = await supabase
-          .from("submission_runs")
+      if (latest?.id) {
+        const { data: findingsData, error: findingsError } = await supabase
+          .from("submission_run_findings")
           .select("*")
-          .eq("submission_id", activeSubmissionId)
-          .order("created_at", { ascending: false })
-          .limit(1);
+          .eq("run_id", latest.id)
+          .order("created_at", { ascending: false });
 
-        if (runsError) {
-          console.error("Error loading latest run:", runsError);
-          setLatestRunError("Couldn't load DealSense status");
-          setLatestRunLoading(false);
-          return;
-        }
-
-        const latest = runs?.[0] || null;
-        setLatestRun(latest);
-
-        if (latest?.id) {
-          // Get findings for this run
-          const { data: findingsData, error: findingsError } = await supabase
-            .from("submission_run_findings")
-            .select("*")
-            .eq("run_id", latest.id);
-
-          if (findingsError) {
-            console.error("Error loading findings:", findingsError);
-            // Don't fail completely, just log and continue
-          } else {
-            setLatestFindings(findingsData || []);
-          }
-        } else {
+        if (findingsError) {
+          console.error("Error loading findings:", findingsError);
           setLatestFindings([]);
+        } else {
+          const list = (findingsData || []) as FindingRow[];
+          const severityOrder = { critical: 1, warning: 2, info: 3 };
+          list.sort((a, b) => {
+            const sa = severityOrder[a.severity as keyof typeof severityOrder] ?? 4;
+            const sb = severityOrder[b.severity as keyof typeof severityOrder] ?? 4;
+            if (sa !== sb) return sa - sb;
+            return (b.score_impact ?? 0) - (a.score_impact ?? 0);
+          });
+          setLatestFindings(list);
         }
-      } catch (err) {
-        console.error("Error loading latest DealSense run:", err);
-        setLatestRunError("Couldn't load DealSense status");
-      } finally {
-        setLatestRunLoading(false);
+      } else {
+        setLatestFindings([]);
       }
+    } catch (err) {
+      console.error("Error loading latest run:", err);
+      setLatestRunError("Couldn't load run status");
+    } finally {
+      setLatestRunLoading(false);
     }
+  }
 
-    loadLatestRun();
+  // Load latest run and findings
+  useEffect(() => {
+    refreshLatestRun();
   }, [activeSubmissionId]);
 
   // Lock body scroll when rename modal opens
@@ -2614,6 +2621,121 @@ export default function DealPage() {
             </div>
           );
         })()}
+      </div>
+
+      {/* Assessment Section */}
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5" style={{ marginTop: 24 }}>
+        <h2 className="text-xl font-semibold mb-0 text-gray-900" style={{ marginBottom: 16 }}>Assessment</h2>
+        {!activeSubmissionId ? (
+          <p style={{ fontSize: 14, color: "#6b7280" }}>No submission yet. Upload a file to create a submission, then run assessment.</p>
+        ) : latestRunLoading ? (
+          <p style={{ fontSize: 14, color: "#6b7280" }}>Loading run…</p>
+        ) : latestRunError ? (
+          <p style={{ fontSize: 14, color: "#b91c1c" }}>{latestRunError}</p>
+        ) : !latestRun ? (
+          <p style={{ fontSize: 14, color: "#6b7280", marginBottom: 12 }}>No runs yet.</p>
+        ) : (
+          <>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginBottom: 16, fontSize: 14 }}>
+              {typeof latestRun.score === "number" && (
+                <span><strong>Score:</strong> {latestRun.score}</span>
+              )}
+              {latestRun.assessment_status && (
+                <span><strong>Status:</strong> {latestRun.assessment_status.replace(/_/g, " ")}</span>
+              )}
+              {latestRun.assessed_at && (
+                <span><strong>Assessed:</strong> {new Date(latestRun.assessed_at).toLocaleString()}</span>
+              )}
+            </div>
+            {Array.isArray(latestRun.top_fixes) && latestRun.top_fixes.length > 0 && (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, color: "#374151" }}>Top fixes</div>
+                <ul style={{ margin: 0, paddingLeft: 20, fontSize: 13, color: "#4b5563" }}>
+                  {latestRun.top_fixes.map((fix, i) => (
+                    <li key={i} style={{ marginBottom: 4 }}>{fix}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {latestFindings.length > 0 ? (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, color: "#374151" }}>Findings</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {latestFindings.map((f, i) => (
+                    <div
+                      key={i}
+                      style={{
+                        padding: 12,
+                        borderRadius: 8,
+                        border: "1px solid #e5e7eb",
+                        background: "#f9fafb",
+                        fontSize: 13,
+                      }}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                        <span
+                          style={{
+                            padding: "2px 6px",
+                            borderRadius: 4,
+                            fontSize: 11,
+                            fontWeight: 600,
+                            textTransform: "capitalize",
+                            background: f.severity === "critical" ? "#fee2e2" : f.severity === "warning" ? "#fef3c7" : "#e0e7ff",
+                            color: f.severity === "critical" ? "#991b1b" : f.severity === "warning" ? "#92400e" : "#3730a3",
+                          }}
+                        >
+                          {f.severity ?? "info"}
+                        </span>
+                        {f.title && <span style={{ fontWeight: 600, color: "#374151" }}>{f.title}</span>}
+                      </div>
+                      {f.message && <p style={{ margin: "0 0 6px 0", color: "#4b5563" }}>{f.message}</p>}
+                      {f.fix && <p style={{ margin: 0, fontSize: 12, color: "#6b7280" }}><strong>Fix:</strong> {f.fix}</p>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : latestRun?.id && (
+              <p style={{ fontSize: 14, color: "#6b7280", marginBottom: 12 }}>No findings.</p>
+            )}
+          </>
+        )}
+        {activeSubmissionId && (
+          <button
+            type="button"
+            onClick={async () => {
+              if (!activeSubmissionId || runAssessmentLoading) return;
+              setRunAssessmentLoading(true);
+              try {
+                const res = await fetch(`/api/submissions/${activeSubmissionId}/run`, { method: "POST" });
+                const json = await res.json().catch(() => ({}));
+                if (json?.ok && json?.runId) {
+                  await refreshLatestRun();
+                } else {
+                  alert(json?.error ?? "Run assessment failed");
+                }
+              } catch (err) {
+                console.error("Run assessment failed:", err);
+                alert(err instanceof Error ? err.message : "Run assessment failed");
+              } finally {
+                setRunAssessmentLoading(false);
+              }
+            }}
+            disabled={runAssessmentLoading}
+            style={{
+              padding: "8px 16px",
+              fontSize: 14,
+              fontWeight: 600,
+              borderRadius: 8,
+              border: "1px solid #4f46e5",
+              background: runAssessmentLoading ? "#c7d2fe" : "#4f46e5",
+              color: "white",
+              cursor: runAssessmentLoading ? "not-allowed" : "pointer",
+              opacity: runAssessmentLoading ? 0.8 : 1,
+            }}
+          >
+            {runAssessmentLoading ? "Running…" : "Run assessment"}
+          </button>
+        )}
       </div>
 
       {/* Upload Modal - portaled to body so it appears above sticky header */}
