@@ -24,12 +24,104 @@ type DealPartyRaw = { id: string; deal_id?: string; roles?: string[]; role?: str
 type DealPartyRow = { id: string; roles?: string[]; role?: string | null };
 type DealPartyNormalized = { id: string; deal_id?: string; roles?: string[]; role?: string | null; notes?: string | null; entityId?: string | null; entity_type?: string | null; display_name?: string | null; email?: string | null; phone?: string | null; type?: string | null; name?: string | null };
 type RunRow = { id?: string; created_at?: string; status?: string; score?: number; assessment_status?: string; assessed_at?: string; top_fixes?: string[] };
-type FindingRow = { severity?: string; workflow_state?: string; title?: string; message?: string; fix?: string; score_impact?: number };
+type FindingRow = { id?: string; severity?: string; status?: string; workflow_state?: string; title?: string; message?: string; fix?: string; score_impact?: number; resolved_at?: string };
 type SupabaseErrorLike = { message?: string; details?: unknown; hint?: string; code?: string };
 
 function getErrorMessage(e: unknown, fallback: string): string {
   if (e instanceof Error) return e.message;
   return typeof (e as { message?: unknown })?.message === "string" ? (e as { message: string }).message : fallback;
+}
+
+function FindingItem({ finding: f, onResolved, resolvedView }: { finding: FindingRow; onResolved?: (findingId: string) => Promise<void>; resolvedView?: boolean }) {
+  const [resolving, setResolving] = useState(false);
+  async function handleResolve(e: React.MouseEvent) {
+    e.stopPropagation();
+    if (!f.id || resolving || !onResolved) return;
+    setResolving(true);
+    try {
+      const res = await fetch(`/api/findings/${f.id}/resolve`, { method: "POST" });
+      const json = await res.json().catch(() => ({}));
+      if (res.ok && json?.ok) {
+        await onResolved(f.id);
+      } else {
+        alert(json?.error ?? "Failed to resolve finding");
+      }
+    } catch (err) {
+      console.error("Resolve finding failed:", err);
+      alert(err instanceof Error ? err.message : "Failed to resolve finding");
+    } finally {
+      setResolving(false);
+    }
+  }
+  return (
+    <div
+      style={{
+        padding: 12,
+        borderRadius: 8,
+        border: "1px solid #e5e7eb",
+        background: "#f9fafb",
+        fontSize: 13,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+        <span
+          style={{
+            padding: "2px 6px",
+            borderRadius: 4,
+            fontSize: 11,
+            fontWeight: 600,
+            textTransform: "capitalize",
+            background: f.severity === "critical" ? "#fee2e2" : f.severity === "warning" ? "#fef3c7" : "#e0e7ff",
+            color: f.severity === "critical" ? "#991b1b" : f.severity === "warning" ? "#92400e" : "#3730a3",
+          }}
+        >
+          {f.severity ?? "info"}
+        </span>
+        {resolvedView && (
+          <span
+            style={{
+              padding: "2px 6px",
+              borderRadius: 4,
+              fontSize: 11,
+              fontWeight: 600,
+              background: "#d1fae5",
+              color: "#065f46",
+            }}
+          >
+            Resolved
+          </span>
+        )}
+        {f.title && <span style={{ fontWeight: 600, color: "#374151" }}>{f.title}</span>}
+        {!resolvedView && f.id && onResolved && (
+          <button
+            type="button"
+            onClick={handleResolve}
+            disabled={resolving}
+            style={{
+              marginLeft: "auto",
+              padding: "4px 10px",
+              fontSize: 12,
+              fontWeight: 500,
+              borderRadius: 6,
+              border: "1px solid #10b981",
+              background: resolving ? "#d1fae5" : "#10b981",
+              color: "white",
+              cursor: resolving ? "not-allowed" : "pointer",
+            }}
+          >
+            {resolving ? "Resolving…" : "Mark resolved"}
+          </button>
+        )}
+      </div>
+      {resolvedView && f.resolved_at && (
+        <p style={{ margin: "0 0 6px 0", fontSize: 12, color: "#6b7280" }}>
+          Resolved at: {new Date(f.resolved_at).toLocaleString()}
+        </p>
+      )}
+      {f.message && <p style={{ margin: "0 0 6px 0", color: "#4b5563" }}>{f.message}</p>}
+      {f.fix && <p style={{ margin: 0, fontSize: 12, color: "#6b7280" }}><strong>Fix:</strong> {f.fix}</p>}
+    </div>
+  );
 }
 
 function FileItem({ file, getDownloadUrl, onDelete, onRefresh }: { file: SubmissionFileRow; getDownloadUrl: (path: string) => Promise<string | null>; onDelete: (fileId: string) => Promise<void>; onRefresh: () => Promise<void> }) {
@@ -1278,6 +1370,11 @@ export default function DealPage() {
   // Compute borrower/guarantor readiness from deal parties
   const hasBorrower = dealParties.some(p => getPartyRoles(p).includes("borrower"));
   const hasGuarantor = dealParties.some(p => getPartyRoles(p).includes("guarantor"));
+
+  const handleFindingResolved = async (findingId: string) => {
+    setLatestFindings((prev) => prev.filter((f) => f.id !== findingId));
+    await refreshLatestRun();
+  };
 
   return (
     <div className="space-y-8">
@@ -2657,46 +2754,46 @@ export default function DealPage() {
                 </ul>
               </div>
             )}
-            {latestFindings.length > 0 ? (
-              <div style={{ marginBottom: 16 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, color: "#374151" }}>Findings</div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                  {latestFindings.map((f, i) => (
-                    <div
-                      key={i}
-                      style={{
-                        padding: 12,
-                        borderRadius: 8,
-                        border: "1px solid #e5e7eb",
-                        background: "#f9fafb",
-                        fontSize: 13,
-                      }}
-                    >
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                        <span
-                          style={{
-                            padding: "2px 6px",
-                            borderRadius: 4,
-                            fontSize: 11,
-                            fontWeight: 600,
-                            textTransform: "capitalize",
-                            background: f.severity === "critical" ? "#fee2e2" : f.severity === "warning" ? "#fef3c7" : "#e0e7ff",
-                            color: f.severity === "critical" ? "#991b1b" : f.severity === "warning" ? "#92400e" : "#3730a3",
-                          }}
-                        >
-                          {f.severity ?? "info"}
-                        </span>
-                        {f.title && <span style={{ fontWeight: 600, color: "#374151" }}>{f.title}</span>}
+            {(() => {
+              const activeFindings = latestFindings.filter((f) => {
+                const status = f.status ?? "";
+                const state = f.workflow_state ?? "open";
+                return status === "new" || state === "open" || state === "acknowledged";
+              });
+              const resolvedFindings = latestFindings.filter((f) => {
+                const status = f.status ?? "";
+                const state = f.workflow_state ?? "";
+                return status === "resolved" || state === "resolved";
+              });
+              return (
+                <>
+                  {activeFindings.length > 0 ? (
+                    <div style={{ marginBottom: 16 }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, color: "#374151" }}>Active findings</div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                        {activeFindings.map((f, i) => (
+                          <FindingItem key={f.id ?? i} finding={f} onResolved={handleFindingResolved} />
+                        ))}
                       </div>
-                      {f.message && <p style={{ margin: "0 0 6px 0", color: "#4b5563" }}>{f.message}</p>}
-                      {f.fix && <p style={{ margin: 0, fontSize: 12, color: "#6b7280" }}><strong>Fix:</strong> {f.fix}</p>}
                     </div>
-                  ))}
-                </div>
-              </div>
-            ) : latestRun?.id && (
-              <p style={{ fontSize: 14, color: "#6b7280", marginBottom: 12 }}>No findings.</p>
-            )}
+                  ) : latestRun?.id ? (
+                    <p style={{ fontSize: 14, color: "#6b7280", marginBottom: 12 }}>No findings.</p>
+                  ) : null}
+                  {resolvedFindings.length > 0 && (
+                    <details style={{ marginBottom: 16 }}>
+                      <summary style={{ fontSize: 13, fontWeight: 600, color: "#374151", cursor: "pointer" }}>
+                        Resolved findings ({resolvedFindings.length})
+                      </summary>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 8 }}>
+                        {resolvedFindings.map((f, i) => (
+                          <FindingItem key={f.id ?? i} finding={f} resolvedView />
+                        ))}
+                      </div>
+                    </details>
+                  )}
+                </>
+              );
+            })()}
           </>
         )}
         {activeSubmissionId && (

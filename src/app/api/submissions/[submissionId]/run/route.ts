@@ -93,6 +93,12 @@ function generateFindings(submissionId: string, files: FileRow[]): FindingRow[] 
   return findings;
 }
 
+const SEVERITY_ORDER: Record<FindingRow["severity"], number> = {
+  critical: 0,
+  warning: 1,
+  info: 2,
+};
+
 function computeSummary(findings: FindingRow[]): { score: number; assessment_status: string; top_fixes: string[] } {
   let score = 100;
   for (const f of findings) {
@@ -101,10 +107,23 @@ function computeSummary(findings: FindingRow[]): { score: number; assessment_sta
   score = Math.max(0, score);
 
   let assessment_status = "ready";
-  if (score < 50) assessment_status = "not_ready";
-  else if (score < 80) assessment_status = "needs_review";
+  if (findings.some((f) => f.severity === "critical")) assessment_status = "needs_review";
+  else if (findings.some((f) => f.severity === "warning")) assessment_status = "minor_issues";
 
-  const top_fixes = [...new Set(findings.map((f) => f.fix))].slice(0, 5);
+  const sorted = [...findings].sort((a, b) => {
+    const sev = SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity];
+    if (sev !== 0) return sev;
+    return b.score_impact - a.score_impact;
+  });
+
+  const seen = new Set<string>();
+  const top_fixes: string[] = [];
+  for (const f of sorted) {
+    if (top_fixes.length >= 5) break;
+    if (seen.has(f.fix)) continue;
+    seen.add(f.fix);
+    top_fixes.push(f.fix);
+  }
 
   return { score, assessment_status, top_fixes };
 }
