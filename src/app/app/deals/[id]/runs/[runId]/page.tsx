@@ -4,6 +4,9 @@ import { useEffect, useState, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
 
+type RunRow = { id?: string; status: string; created_at: string; updated_at?: string };
+type FindingRow = { id: string; severity: string; workflow_state?: string; title?: string; category?: string; message?: string };
+
 export default function RunResultsPage() {
   const params = useParams();
   const router = useRouter();
@@ -13,11 +16,14 @@ export default function RunResultsPage() {
   const runId = Array.isArray(runIdRaw) ? runIdRaw[0] : runIdRaw;
 
   const [loading, setLoading] = useState(true);
-  const [run, setRun] = useState<any>(null);
-  const [findings, setFindings] = useState<any[]>([]);
+  const [run, setRun] = useState<RunRow | null>(null);
+  const [findings, setFindings] = useState<FindingRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [processError, setProcessError] = useState<string | null>(null);
   const processTriggeredRef = useRef(false);
+
+  const missingRunId = !runId || runId === "undefined";
+  const displayProcessError = processError ?? (missingRunId ? "Missing runId" : null);
 
   useEffect(() => {
     async function loadRun() {
@@ -59,8 +65,7 @@ export default function RunResultsPage() {
       return;
     }
 
-    if (!runId || runId === "undefined") {
-      setProcessError("Missing runId");
+    if (missingRunId) {
       return;
     }
 
@@ -93,7 +98,7 @@ export default function RunResultsPage() {
     }
 
     triggerProcess();
-  }, [run, runId]);
+  }, [run, runId, missingRunId]);
 
   useEffect(() => {
     async function loadFindings() {
@@ -225,6 +230,14 @@ export default function RunResultsPage() {
     );
   }
 
+  if (!run) {
+    return (
+      <div className="space-y-8">
+        <p>Loading run results...</p>
+      </div>
+    );
+  }
+
   const statusColors: Record<string, { bg: string; color: string }> = {
     queued: { bg: "#e5e7eb", color: "#374151" },
     running: { bg: "#dbeafe", color: "#1e40af" },
@@ -333,10 +346,10 @@ export default function RunResultsPage() {
             <div>Last updated: {new Date(run.updated_at).toLocaleString()}</div>
           )}
         </div>
-        {processError && (
+        {displayProcessError && (
           <div style={{ marginTop: 12, padding: 12, background: "#fee2e2", borderRadius: 8, border: "1px solid #dc2626" }}>
             <p style={{ fontSize: 13, color: "#991b1b", margin: 0 }}>
-              Error starting processing: {processError}
+              Error starting processing: {displayProcessError}
             </p>
           </div>
         )}

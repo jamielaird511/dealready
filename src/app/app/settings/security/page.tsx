@@ -20,6 +20,20 @@ type EnrollData = {
   uri: string;
 };
 
+type MfaListFactorsResponse = { all?: SupabaseMfaFactor[] };
+type MfaEnrollData = { id: string; totp?: { secret?: string; uri?: string } };
+type MfaChallengeOptions = { factorId: string };
+type MfaChallengeData = { id?: string };
+type MfaVerifyOptions = { factorId: string; challengeId: string; code: string };
+type MfaVerifyData = { session?: unknown };
+type MfaUnenrollOptions = { factorId: string };
+
+function getErrorMessage(e: unknown, fallback: string): string {
+  if (e instanceof Error) return e.message;
+  const m = (e as { message?: string })?.message;
+  return typeof m === "string" ? m : fallback;
+}
+
 export default function SecuritySettingsPage() {
   const router = useRouter();
 
@@ -66,7 +80,7 @@ export default function SecuritySettingsPage() {
     }
 
     // Factor response shape: { all: Factor[], totp: Factor[] }
-    const all = (factorRes as any)?.all ?? [];
+    const all = (factorRes as MfaListFactorsResponse)?.all ?? [];
     setFactors(all);
 
     setLoading(false);
@@ -74,7 +88,6 @@ export default function SecuritySettingsPage() {
 
   useEffect(() => {
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function startEnroll() {
@@ -91,14 +104,15 @@ export default function SecuritySettingsPage() {
       const { data, error } = await supabase.auth.mfa.enroll({
         factorType: "totp",
         friendlyName: "Authenticator app",
-      } as any);
+      });
 
       if (error) throw error;
 
       // Supabase returns: { id, type, totp: { secret, uri, qr_code } } (shape can vary)
-      const factorId: string = (data as any).id;
-      const secret: string = (data as any)?.totp?.secret;
-      const uri: string = (data as any)?.totp?.uri;
+      const enrollData = data as MfaEnrollData;
+      const factorId: string = enrollData.id;
+      const secret: string = enrollData?.totp?.secret ?? "";
+      const uri: string = enrollData?.totp?.uri ?? "";
 
       if (!factorId || !secret || !uri) {
         throw new Error("Missing enrollment data from Supabase.");
@@ -112,8 +126,8 @@ export default function SecuritySettingsPage() {
         secret,
         uri,
       });
-    } catch (e: any) {
-      setError(e?.message ?? "Failed to start TOTP enrollment.");
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, "Failed to start TOTP enrollment."));
     } finally {
       setEnrolling(false);
     }
@@ -137,10 +151,10 @@ export default function SecuritySettingsPage() {
       // Create a challenge first
       const { data: challengeData, error: challengeErr } = await supabase.auth.mfa.challenge({
         factorId: enroll.factorId,
-      } as any);
+      } as MfaChallengeOptions);
       if (challengeErr) throw challengeErr;
 
-      const challengeId: string = (challengeData as any).id;
+      const challengeId: string = (challengeData as MfaChallengeData).id ?? "";
       if (!challengeId) throw new Error("Missing challenge id from Supabase.");
 
       // Verify the code
@@ -148,23 +162,17 @@ export default function SecuritySettingsPage() {
         factorId: enroll.factorId,
         challengeId,
         code: trimmed,
-      } as any);
+      } as MfaVerifyOptions);
 
       if (verifyErr) throw verifyErr;
-
-      // Some clients return a new session; if so, set it
-      const maybeSession = (verifyData as any)?.session;
-      if (maybeSession) {
-        await supabase.auth.setSession(maybeSession);
-      }
 
       setInfo("Authenticator app enabled.");
       setEnroll(null);
       setCode("");
 
       await load();
-    } catch (e: any) {
-      setError(e?.message ?? "Failed to verify code.");
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, "Failed to verify code."));
     } finally {
       setVerifying(false);
     }
@@ -179,13 +187,13 @@ export default function SecuritySettingsPage() {
     try {
       const supabase = supabaseBrowser();
 
-      const { error } = await supabase.auth.mfa.unenroll({ factorId } as any);
+      const { error } = await supabase.auth.mfa.unenroll({ factorId } as MfaUnenrollOptions);
       if (error) throw error;
 
       setInfo("MFA factor removed.");
       await load();
-    } catch (e: any) {
-      setError(e?.message ?? "Failed to remove factor.");
+    } catch (e: unknown) {
+      setError(getErrorMessage(e, "Failed to remove factor."));
     }
   }
 
@@ -328,7 +336,7 @@ export default function SecuritySettingsPage() {
                     Open Google Authenticator / 1Password / Authy and scan the QR code.
                   </li>
                   <li style={{ marginBottom: 8 }}>
-                    If you can't scan, enter this secret manually:
+                    If you can&apos;t scan, enter this secret manually:
                     <div
                       style={{
                         marginTop: 8,

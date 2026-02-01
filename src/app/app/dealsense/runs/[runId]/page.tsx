@@ -3,6 +3,9 @@
 import { useEffect, useState, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 
+type RunRow = { status?: string; score?: number; assessment_status?: string; top_fixes?: string[] };
+type FindingRow = { id: string; severity?: string; title?: string; message?: string; fix?: string };
+
 export default function DealSenseRunPage() {
   const params = useParams();
   const router = useRouter();
@@ -10,8 +13,8 @@ export default function DealSenseRunPage() {
   const runId = Array.isArray(runIdRaw) ? runIdRaw[0] : runIdRaw;
 
   const [loading, setLoading] = useState(true);
-  const [run, setRun] = useState<any>(null);
-  const [findings, setFindings] = useState<any[]>([]);
+  const [run, setRun] = useState<RunRow | null>(null);
+  const [findings, setFindings] = useState<FindingRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const processTriggeredRef = useRef(false);
 
@@ -286,34 +289,37 @@ export default function DealSenseRunPage() {
           </div>
         )}
 
-        {run?.top_fixes && Array.isArray(run.top_fixes) && run.top_fixes.length > 0 && (
-          <div
-            style={{
-              border: "1px solid rgba(0,0,0,0.1)",
-              borderRadius: 10,
-              padding: 24,
-              background: "white",
-              marginBottom: 24,
-            }}
-          >
-            <h3 style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>
-              Top Fixes
-            </h3>
-            <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
-              {run.top_fixes.map((fix: string, idx: number) => (
-                <li
-                  key={idx}
-                  style={{
-                    padding: "8px 0",
-                    borderBottom: idx < run.top_fixes.length - 1 ? "1px solid #e5e7eb" : "none",
-                  }}
-                >
-                  {fix}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
+        {run?.top_fixes && Array.isArray(run.top_fixes) && run.top_fixes.length > 0 && (() => {
+          const topFixes = run.top_fixes ?? [];
+          return (
+            <div
+              style={{
+                border: "1px solid rgba(0,0,0,0.1)",
+                borderRadius: 10,
+                padding: 24,
+                background: "white",
+                marginBottom: 24,
+              }}
+            >
+              <h3 style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>
+                Top Fixes
+              </h3>
+              <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+                {topFixes.map((fix: string, idx: number) => (
+                  <li
+                    key={idx}
+                    style={{
+                      padding: "8px 0",
+                      borderBottom: idx < topFixes.length - 1 ? "1px solid #e5e7eb" : "none",
+                    }}
+                  >
+                    {fix}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          );
+        })()}
 
         <div
           style={{
@@ -331,7 +337,7 @@ export default function DealSenseRunPage() {
             <p style={{ color: "#6b7280" }}>No findings to display.</p>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-              {findings.map((finding: any) => (
+              {findings.map((finding: FindingRow) => (
                 <div
                   key={finding.id}
                   style={{

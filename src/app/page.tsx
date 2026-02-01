@@ -1,7 +1,4 @@
 import Link from "next/link";
-import Image from "next/image";
-
-const ENABLE_EPHEMERAL_RETENTION = false;
 
 export default function Home() {
   return (

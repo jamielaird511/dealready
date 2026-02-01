@@ -4,7 +4,11 @@ import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
 
-function FileItem({ file, getDownloadUrl }: { file: any; getDownloadUrl: (path: string) => Promise<string | null> }) {
+type SubmissionRow = { id: string; deal_id?: string; title?: string; status?: string; created_at?: string; updated_at?: string };
+type SubmissionFileRow = { id?: string; storage_path?: string; original_filename?: string; created_at?: string };
+type SupabaseErrorLike = { message?: string; details?: unknown; hint?: string; code?: string };
+
+function FileItem({ file, getDownloadUrl }: { file: SubmissionFileRow; getDownloadUrl: (path: string) => Promise<string | null> }) {
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [loadingUrl, setLoadingUrl] = useState(false);
 
@@ -13,6 +17,7 @@ function FileItem({ file, getDownloadUrl }: { file: any; getDownloadUrl: (path: 
       window.open(downloadUrl, "_blank");
       return;
     }
+    if (!file.storage_path) return;
 
     setLoadingUrl(true);
     const url = await getDownloadUrl(file.storage_path);
@@ -73,9 +78,9 @@ export default function SubmissionPage() {
   const submissionId = params.id as string;
 
   const [loading, setLoading] = useState(true);
-  const [submission, setSubmission] = useState<any>(null);
+  const [submission, setSubmission] = useState<SubmissionRow | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [files, setFiles] = useState<any[]>([]);
+  const [files, setFiles] = useState<SubmissionFileRow[]>([]);
   const [filesLoading, setFilesLoading] = useState(true);
   const [filesError, setFilesError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -152,10 +157,7 @@ export default function SubmissionPage() {
     setFilesError(null);
     const supabase = supabaseBrowser();
 
-    const {
-      data: { user },
-      error: userError
-    } = await supabase.auth.getUser();
+    const { data: { user } } = await supabase.auth.getUser();
 
     if (!user) {
       console.error("No authenticated user for storage upload");
@@ -183,9 +185,9 @@ export default function SubmissionPage() {
         console.error("Error uploading file:", uploadError);
         console.error("Upload error details:", {
           message: uploadError.message,
-          details: (uploadError as any).details,
-          hint: (uploadError as any).hint,
-          code: (uploadError as any).code,
+          details: (uploadError as SupabaseErrorLike).details,
+          hint: (uploadError as SupabaseErrorLike).hint,
+          code: (uploadError as SupabaseErrorLike).code,
         });
         alert("Error uploading file. Please try again.");
         setUploading(false);
@@ -201,9 +203,11 @@ export default function SubmissionPage() {
         size_bytes: file.size
       };
 
-      const { error: insertError } = await supabase
+      const { data: insertedFile, error: insertError } = await supabase
         .from("submission_files")
-        .insert(insertData);
+        .insert(insertData)
+        .select("id")
+        .single();
 
       if (insertError) {
         console.error("Error inserting file record:", insertError);
@@ -228,6 +232,14 @@ export default function SubmissionPage() {
 
         setUploading(false);
         return;
+      }
+
+      if (insertedFile?.id) {
+        fetch("/api/submission-files/extract", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ fileId: insertedFile.id }),
+        }).catch(() => {});
       }
 
       // Refresh files list
@@ -264,9 +276,9 @@ export default function SubmissionPage() {
     if (error) {
       console.error("Error creating signed URL:", {
         message: error.message,
-        details: (error as any).details,
-        hint: (error as any).hint,
-        code: (error as any).code,
+        details: (error as SupabaseErrorLike).details,
+        hint: (error as SupabaseErrorLike).hint,
+        code: (error as SupabaseErrorLike).code,
       });
       return null;
     }

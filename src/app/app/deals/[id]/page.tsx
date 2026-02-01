@@ -6,7 +6,21 @@ import { useParams, useRouter } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
 import { DeleteFileDialog } from "@/components/DeleteFileDialog";
 
-function FileItem({ file, getDownloadUrl, onDelete }: { file: any; getDownloadUrl: (path: string) => Promise<string | null>; onDelete: (fileId: string) => Promise<void> }) {
+type SubmissionFileRow = { id?: string; storage_path?: string; display_name?: string; original_filename?: string; created_at?: string; category?: string };
+type DealRow = { id?: string; name?: string; status?: string; notes?: string };
+type DealPartyRaw = { id: string; deal_id?: string; roles?: string[]; role?: string | null; notes?: string | null; entities?: unknown; type?: string | null; name?: string | null };
+type DealPartyRow = { id: string; roles?: string[]; role?: string | null };
+type DealPartyNormalized = { id: string; deal_id?: string; roles?: string[]; role?: string | null; notes?: string | null; entityId?: string | null; entity_type?: string | null; display_name?: string | null; email?: string | null; phone?: string | null; type?: string | null; name?: string | null };
+type RunRow = { id?: string; created_at?: string; status?: string };
+type FindingRow = { severity?: string; workflow_state?: string };
+type SupabaseErrorLike = { message?: string; details?: unknown; hint?: string; code?: string };
+
+function getErrorMessage(e: unknown, fallback: string): string {
+  if (e instanceof Error) return e.message;
+  return typeof (e as { message?: unknown })?.message === "string" ? (e as { message: string }).message : fallback;
+}
+
+function FileItem({ file, getDownloadUrl, onDelete }: { file: SubmissionFileRow; getDownloadUrl: (path: string) => Promise<string | null>; onDelete: (fileId: string) => Promise<void> }) {
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [loadingUrl, setLoadingUrl] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -17,6 +31,7 @@ function FileItem({ file, getDownloadUrl, onDelete }: { file: any; getDownloadUr
       window.open(downloadUrl, "_blank");
       return;
     }
+    if (!file.storage_path) return;
 
     setLoadingUrl(true);
     const url = await getDownloadUrl(file.storage_path);
@@ -31,13 +46,14 @@ function FileItem({ file, getDownloadUrl, onDelete }: { file: any; getDownloadUr
   }
 
   async function confirmDelete() {
+    if (!file.id) return;
     try {
       setDeleting(true);
       await onDelete(file.id);
       setDeleteOpen(false);
-    } catch (err) {
+    } catch (err: unknown) {
       console.error("Error deleting file:", err);
-      alert("Delete failed: " + ((err as any)?.message ?? "Unknown error"));
+      alert("Delete failed: " + getErrorMessage(err, "Unknown error"));
     } finally {
       setDeleting(false);
     }
@@ -116,7 +132,7 @@ function FileItem({ file, getDownloadUrl, onDelete }: { file: any; getDownloadUr
       <DeleteFileDialog
         open={deleteOpen}
         onOpenChange={setDeleteOpen}
-        fileName={file.display_name || file.original_filename}
+        fileName={file.display_name || file.original_filename || "File"}
         onConfirm={confirmDelete}
         isDeleting={deleting}
       />
@@ -130,7 +146,7 @@ export default function DealPage() {
   const dealId = params.id as string;
 
   const [loading, setLoading] = useState(true);
-  const [deal, setDeal] = useState<any>(null);
+  const [deal, setDeal] = useState<DealRow | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [status, setStatus] = useState("draft");
@@ -138,7 +154,7 @@ export default function DealPage() {
   const [saveMessage, setSaveMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
   
   // Deal parties state
-  const [dealParties, setDealParties] = useState<any[]>([]);
+  const [dealParties, setDealParties] = useState<DealPartyNormalized[]>([]);
   const [partiesLoading, setPartiesLoading] = useState(true);
   
   // Add party form state
@@ -163,7 +179,7 @@ export default function DealPage() {
   
   // File upload state (using first submission automatically)
   const [activeSubmissionId, setActiveSubmissionId] = useState<string | null>(null);
-  const [files, setFiles] = useState<any[]>([]);
+  const [files, setFiles] = useState<SubmissionFileRow[]>([]);
   const [filesLoading, setFilesLoading] = useState(true);
   const [filesError, setFilesError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -202,8 +218,8 @@ export default function DealPage() {
   const [showEmptyCategories, setShowEmptyCategories] = useState(false);
 
   // Latest DealSense run state
-  const [latestRun, setLatestRun] = useState<any>(null);
-  const [latestFindings, setLatestFindings] = useState<any[]>([]);
+  const [latestRun, setLatestRun] = useState<RunRow | null>(null);
+  const [latestFindings, setLatestFindings] = useState<FindingRow[]>([]);
   const [latestRunLoading, setLatestRunLoading] = useState(false);
   const [latestRunError, setLatestRunError] = useState<string | null>(null);
 
@@ -364,23 +380,24 @@ export default function DealPage() {
 
       // Transform data to normalize structure with legacy fallback
       // TODO: Remove legacy fallback once all rows are migrated
-      const normalized = (data || []).map((party: any) => {
+      type EntityLike = { id?: string; entity_type?: string; display_name?: string; email?: string; phone?: string };
+      const normalized = (data || []).map((party: DealPartyRaw): DealPartyNormalized => {
         // Supabase returns entities as an array when using join syntax, get first element
-        const entity = Array.isArray(party.entities) ? party.entities[0] : party.entities;
+        const rawEntity = Array.isArray(party.entities) ? (party.entities as EntityLike[])[0] : (party.entities as EntityLike | null);
+        const entity = rawEntity ?? null;
         return {
           id: party.id,
           deal_id: party.deal_id,
           roles: party.roles || (party.role ? [party.role] : []),
-          notes: party.notes,
+          notes: party.notes ?? null,
           entityId: entity?.id || null,
-          entity_type: entity?.entity_type || party.type,
-          display_name: entity?.display_name || party.name,
+          entity_type: (entity?.entity_type || party.type) ?? null,
+          display_name: (entity?.display_name || party.name) ?? null,
           email: entity?.email || null,
           phone: entity?.phone || null,
-          // Legacy fields for backward compatibility during transition
-          type: entity?.entity_type || party.type,
-          name: entity?.display_name || party.name,
-          role: party.roles?.[0] || party.role || null,
+          type: (entity?.entity_type || party.type) ?? null,
+          name: (entity?.display_name || party.name) ?? null,
+          role: party.roles?.[0] ?? party.role ?? null,
         };
       });
 
@@ -696,10 +713,7 @@ export default function DealPage() {
     setFilesError(null);
     const supabase = supabaseBrowser();
 
-    const {
-      data: { user },
-      error: userError
-    } = await supabase.auth.getUser();
+    const { data: { user } } = await supabase.auth.getUser();
 
     if (!user) {
       console.error("No authenticated user for storage upload");
@@ -805,9 +819,11 @@ export default function DealPage() {
         size_bytes: selectedFile.size
       };
 
-      const { error: insertError } = await supabase
+      const { data: insertedFile, error: insertError } = await supabase
         .from("submission_files")
-        .insert(insertData);
+        .insert(insertData)
+        .select("id")
+        .single();
 
       if (insertError) {
         console.error("Error inserting file record:", {
@@ -819,6 +835,11 @@ export default function DealPage() {
         alert(`Error saving file record: ${insertError.message || "Please try again."}`);
         setUploading(false);
         return;
+      }
+
+      if (insertedFile?.id) {
+        console.log("[Deal upload] Inserted file id:", insertedFile.id, "- extraction triggered");
+        fetch("/api/submission-files/extract", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ fileId: insertedFile.id }) }).catch(()=>{});
       }
 
       // Refresh files list
@@ -905,20 +926,22 @@ export default function DealPage() {
     }
 
     // Delete from storage (non-critical - if it fails, show warning but don't rollback)
-    const bucketName = "deal-packs";
-    const { error: storageError } = await supabase.storage
-      .from(bucketName)
-      .remove([file.storage_path]);
+    if (file.storage_path) {
+      const bucketName = "deal-packs";
+      const { error: storageError } = await supabase.storage
+        .from(bucketName)
+        .remove([file.storage_path]);
 
-    if (storageError) {
-      console.error("Error deleting file from storage:", {
-        message: storageError.message,
-        details: (storageError as any).details,
-        hint: (storageError as any).hint,
-        code: (storageError as any).code,
-      });
-      setDeleteError(`Warning: File record deleted but storage cleanup failed: ${storageError.message || "Unknown error"}`);
-      // Don't throw - UI already shows file as deleted
+      if (storageError) {
+        console.error("Error deleting file from storage:", {
+          message: storageError.message,
+          details: (storageError as SupabaseErrorLike).details,
+          hint: (storageError as SupabaseErrorLike).hint,
+          code: (storageError as SupabaseErrorLike).code,
+        });
+        setDeleteError(`Warning: File record deleted but storage cleanup failed: ${storageError.message || "Unknown error"}`);
+        // Don't throw - UI already shows file as deleted
+      }
     }
   }
 
@@ -1021,7 +1044,7 @@ export default function DealPage() {
   const hasFiles = files.length > 0;
 
   // Helper function to get party roles with legacy fallback
-  function getPartyRoles(party: any): string[] {
+  function getPartyRoles(party: DealPartyRow): string[] {
     return party.roles ?? (party.role ? [party.role] : []);
   }
 
@@ -1750,7 +1773,7 @@ export default function DealPage() {
                 <div className="flex items-center gap-3 mb-3">
                   <span style={{ fontSize: 13, color: "#6b7280" }}>
                     Last run: {(() => {
-                      const runDate = new Date(latestRun.created_at);
+                      const runDate = latestRun.created_at ? new Date(latestRun.created_at) : new Date(0);
                       const now = new Date();
                       const diffMs = now.getTime() - runDate.getTime();
                       const diffMins = Math.floor(diffMs / 60000);

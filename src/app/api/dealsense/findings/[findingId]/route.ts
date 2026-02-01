@@ -40,27 +40,41 @@ export async function PATCH(
     }
 
     // Parse request body
-    const body = await req.json().catch(() => ({}));
-    const { workflow_state, status, owner, resolution_note } = body;
+    const body = (await req.json().catch(() => ({}))) as unknown;
+    const {
+      workflow_state,
+      status,
+      owner,
+      resolution_note,
+    } = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
 
     // Build update object with only allowed fields
-    const updates: any = {};
+    const updates: Record<string, unknown> = {};
 
     // Validate and set workflow_state (preferred) or status (backward compatibility)
+    const validStates = ["open", "acknowledged", "resolved", "dismissed"] as const;
+    type WorkflowState = (typeof validStates)[number];
+
     const stateValue = workflow_state !== undefined ? workflow_state : status;
     if (stateValue !== undefined) {
-      const validStates = ['open', 'acknowledged', 'resolved', 'dismissed'];
-      if (!validStates.includes(stateValue)) {
+      if (typeof stateValue !== "string") {
         return NextResponse.json(
           { error: "Invalid workflow_state", workflow_state: stateValue },
           { status: 400 }
         );
       }
-      updates.workflow_state = stateValue;
+      if (!(validStates as readonly string[]).includes(stateValue)) {
+        return NextResponse.json(
+          { error: "Invalid workflow_state", workflow_state: stateValue },
+          { status: 400 }
+        );
+      }
+      const workflowState = stateValue as WorkflowState;
+      updates.workflow_state = workflowState;
       updates.state_changed_at = new Date().toISOString();
 
       // Set resolved_at when workflow_state is 'resolved'
-      if (stateValue === 'resolved') {
+      if (workflowState === "resolved") {
         updates.resolved_at = new Date().toISOString();
       }
     }
@@ -110,7 +124,8 @@ export async function PATCH(
       return NextResponse.json({ error: "Run not found" }, { status: 404 });
     }
 
-    const submission = (run as any).submissions;
+    type RunWithSubmission = { submissions?: { org_id?: string } | null };
+    const submission = (run as RunWithSubmission).submissions;
     if (!submission || !submission.org_id) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }

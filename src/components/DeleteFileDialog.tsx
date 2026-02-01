@@ -71,7 +71,7 @@ export function DeleteFileDialog({
             >
               {fileName}
             </span>{" "}
-            from this deal. This can't be undone.
+            from this deal. This can&apos;t be undone.
           </p>
         </div>
 

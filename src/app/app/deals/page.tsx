@@ -5,12 +5,15 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
 
+type DealRow = { id: string; name?: string; status?: string; created_at?: string; updated_at?: string };
+type LatestRunRow = { id: string; created_at: string };
+
 export default function DealsPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
-  const [deals, setDeals] = useState<any[]>([]);
+  const [deals, setDeals] = useState<DealRow[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [dealSenseData, setDealSenseData] = useState<Record<string, { latestRun: any; criticalCount: number; activeCount: number; loading: boolean; error: string | null }>>({});
+  const [dealSenseData, setDealSenseData] = useState<Record<string, { latestRun: LatestRunRow | null; criticalCount: number; activeCount: number; loading: boolean; error: string | null }>>({});
 
   useEffect(() => {
     async function loadDeals() {

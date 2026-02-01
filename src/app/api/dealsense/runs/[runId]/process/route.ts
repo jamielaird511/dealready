@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { computeFindings } from "@/lib/dealsense/runChecks";
+import { computeFindings, type Party } from "@/lib/dealsense/runChecks";
 
-export async function GET(req: NextRequest) {
+export async function GET(_req: NextRequest) {
+  void _req;
   try {
     const supabase = await createSupabaseServerClient();
 
@@ -48,7 +49,7 @@ export async function POST(
     }
   }
 
-  let finalRunId = runId || urlRunId;
+  const finalRunId = runId || urlRunId;
 
   console.log("[DealSense Process API] runId debug", {
     runIdFromParams: runId,
@@ -177,13 +178,15 @@ export async function POST(
     }
 
     // Normalize parties data for computeFindings
-    const parties = (partiesData || []).map((p: any) => ({
-      roles: p.roles ?? (p.role ? [p.role] : []),
-      role: p.role,
+    type PartyRow = { roles?: unknown; role?: unknown };
+    const parties: Party[] = (partiesData || []).map((p: PartyRow): Party => ({
+      roles: Array.isArray(p.roles) ? (p.roles as string[]) : (p.role != null ? [String(p.role)] : []),
+      role: p.role != null ? String(p.role) : null,
     }));
 
     // Normalize files data
-    const normalizedFiles = (files || []).map((f: any) => ({
+    type FileRow = { category?: string; display_name?: string; original_filename?: string };
+    const normalizedFiles = (files || []).map((f: FileRow) => ({
       category: f.category,
       display_name: f.display_name,
       original_filename: f.original_filename,

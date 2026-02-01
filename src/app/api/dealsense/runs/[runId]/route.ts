@@ -70,7 +70,8 @@ export async function GET(
     }
 
     // Validate org membership: user must be in the same org as the submission
-    const submission = (run as any).submissions;
+    type RunWithSubmission = { submissions?: { org_id?: string } | null };
+    const submission = (run as RunWithSubmission).submissions;
     if (!submission || !submission.org_id) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
@@ -99,7 +100,9 @@ export async function GET(
     }
 
     // Remove the nested submissions object from the run response
-    const { submissions, ...runData } = run as any;
+    type RunWithSubmissionsKey = Record<string, unknown> & { submissions?: unknown };
+    const { submissions: _submissions, ...runData } = run as RunWithSubmissionsKey;
+    void _submissions;
 
     return NextResponse.json({
       run: runData,
