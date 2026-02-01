@@ -2732,69 +2732,95 @@ export default function DealPage() {
         ) : !latestRun ? (
           <p style={{ fontSize: 14, color: "#6b7280", marginBottom: 12 }}>No runs yet.</p>
         ) : (
-          <>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginBottom: 16, fontSize: 14 }}>
-              {typeof latestRun.score === "number" && (
-                <span><strong>Score:</strong> {latestRun.score}</span>
-              )}
-              {latestRun.assessment_status && (
-                <span><strong>Status:</strong> {latestRun.assessment_status.replace(/_/g, " ")}</span>
-              )}
-              {latestRun.assessed_at && (
-                <span><strong>Assessed:</strong> {new Date(latestRun.assessed_at).toLocaleString()}</span>
-              )}
-            </div>
-            {Array.isArray(latestRun.top_fixes) && latestRun.top_fixes.length > 0 && (
-              <div style={{ marginBottom: 16 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, color: "#374151" }}>Top fixes</div>
-                <ul style={{ margin: 0, paddingLeft: 20, fontSize: 13, color: "#4b5563" }}>
-                  {latestRun.top_fixes.map((fix, i) => (
-                    <li key={i} style={{ marginBottom: 4 }}>{fix}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            {(() => {
-              const activeFindings = latestFindings.filter((f) => {
-                const status = f.status ?? "";
-                const state = f.workflow_state ?? "open";
-                return status === "new" || state === "open" || state === "acknowledged";
-              });
-              const resolvedFindings = latestFindings.filter((f) => {
-                const status = f.status ?? "";
-                const state = f.workflow_state ?? "";
-                return status === "resolved" || state === "resolved";
-              });
-              return (
-                <>
-                  {activeFindings.length > 0 ? (
-                    <div style={{ marginBottom: 16 }}>
-                      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, color: "#374151" }}>Active findings</div>
-                      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                        {activeFindings.map((f, i) => (
-                          <FindingItem key={f.id ?? i} finding={f} onResolved={handleFindingResolved} />
-                        ))}
-                      </div>
-                    </div>
-                  ) : latestRun?.id ? (
-                    <p style={{ fontSize: 14, color: "#6b7280", marginBottom: 12 }}>No findings.</p>
-                  ) : null}
-                  {resolvedFindings.length > 0 && (
-                    <details style={{ marginBottom: 16 }}>
-                      <summary style={{ fontSize: 13, fontWeight: 600, color: "#374151", cursor: "pointer" }}>
-                        Resolved findings ({resolvedFindings.length})
-                      </summary>
-                      <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 8 }}>
-                        {resolvedFindings.map((f, i) => (
-                          <FindingItem key={f.id ?? i} finding={f} resolvedView />
-                        ))}
-                      </div>
-                    </details>
+          (() => {
+            const activeFindings = latestFindings.filter((f) => {
+              const status = f.status ?? "";
+              const state = f.workflow_state ?? "open";
+              return status === "new" || state === "open" || state === "acknowledged";
+            });
+            const resolvedFindings = latestFindings.filter((f) => {
+              const status = f.status ?? "";
+              const state = f.workflow_state ?? "";
+              return status === "resolved" || state === "resolved";
+            });
+            const activeCriticalCount = activeFindings.filter((f) => f.severity === "critical").length;
+            const activeWarningCount = activeFindings.filter((f) => f.severity === "warning").length;
+            const readiness =
+              activeCriticalCount > 0 ? "not_ready" : activeWarningCount > 0 ? "minor_issues" : "ready";
+
+            const readinessConfig = {
+              ready: { label: "Ready to submit", helper: "No blocking or warning findings. You can submit this pack.", bg: "#d1fae5", color: "#065f46" },
+              minor_issues: { label: "Minor issues", helper: "Some warnings remain. Consider resolving them before submitting.", bg: "#fef3c7", color: "#92400e" },
+              not_ready: { label: "Not ready", helper: "Critical findings must be resolved before submitting.", bg: "#fee2e2", color: "#991b1b" },
+            };
+            const config = readinessConfig[readiness];
+
+            return (
+              <>
+                <div style={{ marginBottom: 16 }}>
+                  <div
+                    style={{
+                      display: "inline-block",
+                      padding: "8px 14px",
+                      borderRadius: 8,
+                      background: config.bg,
+                      color: config.color,
+                      fontSize: 15,
+                      fontWeight: 700,
+                    }}
+                  >
+                    {config.label}
+                  </div>
+                  <p style={{ margin: "8px 0 0 0", fontSize: 14, color: "#6b7280" }}>{config.helper}</p>
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginBottom: 16, fontSize: 14 }}>
+                  {typeof latestRun.score === "number" && (
+                    <span><strong>Score:</strong> {latestRun.score}</span>
                   )}
-                </>
-              );
-            })()}
-          </>
+                  {latestRun.assessment_status && (
+                    <span><strong>Status:</strong> {latestRun.assessment_status.replace(/_/g, " ")}</span>
+                  )}
+                  {latestRun.assessed_at && (
+                    <span><strong>Assessed:</strong> {new Date(latestRun.assessed_at).toLocaleString()}</span>
+                  )}
+                </div>
+                {Array.isArray(latestRun.top_fixes) && latestRun.top_fixes.length > 0 && (
+                  <div style={{ marginBottom: 16 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, color: "#374151" }}>Top fixes</div>
+                    <ul style={{ margin: 0, paddingLeft: 20, fontSize: 13, color: "#4b5563" }}>
+                      {latestRun.top_fixes.map((fix, i) => (
+                        <li key={i} style={{ marginBottom: 4 }}>{fix}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {activeFindings.length > 0 ? (
+                  <div style={{ marginBottom: 16 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, color: "#374151" }}>Active findings</div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                      {activeFindings.map((f, i) => (
+                        <FindingItem key={f.id ?? i} finding={f} onResolved={handleFindingResolved} />
+                      ))}
+                    </div>
+                  </div>
+                ) : latestRun?.id ? (
+                  <p style={{ fontSize: 14, color: "#6b7280", marginBottom: 12 }}>No findings.</p>
+                ) : null}
+                {resolvedFindings.length > 0 && (
+                  <details style={{ marginBottom: 16 }}>
+                    <summary style={{ fontSize: 13, fontWeight: 600, color: "#374151", cursor: "pointer" }}>
+                      Resolved findings ({resolvedFindings.length})
+                    </summary>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 8 }}>
+                      {resolvedFindings.map((f, i) => (
+                        <FindingItem key={f.id ?? i} finding={f} resolvedView />
+                      ))}
+                    </div>
+                  </details>
+                )}
+              </>
+            );
+          })()
         )}
         {activeSubmissionId && (
           <button
