@@ -33,6 +33,28 @@ function evidenceFromFile(f: FileRow): { file_id?: string; original_filename?: s
   return out;
 }
 
+function hasCategoryOrKeywords(files: FileRow[], categoryValue: string, keywords: string[]): boolean {
+  const catLower = categoryValue.toLowerCase();
+  return files.some((f) => {
+    const cat = (f.category ?? "").toLowerCase();
+    if (cat === catLower) return true;
+    const name = (f.display_name ?? "").toLowerCase();
+    const orig = (f.original_filename ?? "").toLowerCase();
+    return keywords.some((kw) => name.includes(kw.toLowerCase()) || orig.includes(kw.toLowerCase()));
+  });
+}
+
+function hasSecuredEvidence(files: FileRow[]): boolean {
+  const keywords = ["security", "property", "mortgage", "valuation"];
+  return files.some((f) => {
+    const cat = (f.category ?? "").toLowerCase();
+    const name = (f.display_name ?? "").toLowerCase();
+    const orig = (f.original_filename ?? "").toLowerCase();
+    const combined = `${cat} ${name} ${orig}`;
+    return keywords.some((kw) => combined.includes(kw.toLowerCase()));
+  });
+}
+
 function generateFindings(submissionId: string, files: FileRow[]): FindingRow[] {
   const findings: FindingRow[] = [];
 
@@ -88,6 +110,127 @@ function generateFindings(submissionId: string, files: FileRow[]): FindingRow[] 
         status: "new",
       });
     }
+  }
+
+  const missingDocChecks: Array<{
+    finding_id: string;
+    title: string;
+    message: string;
+    fix: string;
+    categoryMatch: string;
+    keywordMatches: string[];
+    severity: "critical" | "warning" | "info";
+    score_impact: number;
+  }> = [
+    {
+      finding_id: "docs_missing_bank_statements",
+      title: "Missing bank statements",
+      message: "Bank statements (e.g. last 6 months) not found in the pack.",
+      fix: "Upload bank statements with category Bank statements or a filename indicating statements/transactions.",
+      categoryMatch: "bank_statements",
+      keywordMatches: ["bank statement", "statement", "transactions"],
+      severity: "critical",
+      score_impact: 25,
+    },
+    {
+      finding_id: "docs_missing_tax",
+      title: "Missing IRD/tax documents",
+      message: "IRD or tax documents (GST, income tax) not found.",
+      fix: "Upload tax/IRD documents with category Tax or a filename indicating IRD, tax, or GST.",
+      categoryMatch: "tax",
+      keywordMatches: ["ird", "tax", "gst", "income tax"],
+      severity: "critical",
+      score_impact: 25,
+    },
+    {
+      finding_id: "docs_missing_debtor_aging",
+      title: "Missing debtor aging",
+      message: "Debtor aging report not found.",
+      fix: "Upload a debtor aging report with category Debtors or a filename indicating debtors/aging.",
+      categoryMatch: "debtors",
+      keywordMatches: ["debtor", "debtors", "aging", "ageing"],
+      severity: "warning",
+      score_impact: 10,
+    },
+    {
+      finding_id: "docs_missing_creditor_aging",
+      title: "Missing creditor aging",
+      message: "Creditor aging report not found.",
+      fix: "Upload a creditor aging report with category Creditors or a filename indicating creditors/aging.",
+      categoryMatch: "creditors",
+      keywordMatches: ["creditor", "creditors", "aging", "ageing"],
+      severity: "warning",
+      score_impact: 10,
+    },
+    {
+      finding_id: "docs_missing_forecast",
+      title: "Missing forecast/budget",
+      message: "Forecast, budget or cashflow projection not found.",
+      fix: "Upload forecast/budget with category Forecast or a filename indicating forecast, budget or projection.",
+      categoryMatch: "forecast",
+      keywordMatches: ["forecast", "budget", "projection", "cashflow"],
+      severity: "warning",
+      score_impact: 10,
+    },
+    {
+      finding_id: "docs_missing_lending_schedule",
+      title: "Missing existing lending schedule",
+      message: "Existing facilities or loan schedule not found.",
+      fix: "Upload facility/lending schedule with category Lending or a filename indicating facilities or term loans.",
+      categoryMatch: "lending",
+      keywordMatches: ["facility", "facilities", "lending", "loan schedule", "term loan"],
+      severity: "warning",
+      score_impact: 10,
+    },
+  ];
+
+  for (const check of missingDocChecks) {
+    if (!hasCategoryOrKeywords(files, check.categoryMatch, check.keywordMatches)) {
+      findings.push({
+        run_id: "",
+        severity: check.severity,
+        category: "documents",
+        message: check.message,
+        finding_id: check.finding_id,
+        title: check.title,
+        fix: check.fix,
+        score_impact: check.score_impact,
+        evidence: null,
+        status: "new",
+      });
+    }
+  }
+
+  const secured = hasSecuredEvidence(files);
+  const valuationKeywords = ["valuation", "val report", "valn"];
+  const insuranceKeywords = ["insurance", "insur"];
+  if (!hasCategoryOrKeywords(files, "valuation", valuationKeywords)) {
+    findings.push({
+      run_id: "",
+      severity: secured ? "warning" : "info",
+      category: "documents",
+      message: secured ? "Valuation not found; required for secured lending." : "Valuation document not found.",
+      finding_id: "docs_missing_valuation",
+      title: "Missing valuation",
+      fix: secured ? "Upload a valuation with category Valuation or a filename indicating valuation." : "Consider uploading a valuation if applicable.",
+      score_impact: secured ? 10 : 5,
+      evidence: null,
+      status: "new",
+    });
+  }
+  if (!hasCategoryOrKeywords(files, "insurance", insuranceKeywords)) {
+    findings.push({
+      run_id: "",
+      severity: secured ? "warning" : "info",
+      category: "documents",
+      message: secured ? "Insurance evidence not found; required for secured lending." : "Insurance document not found.",
+      finding_id: "docs_missing_insurance",
+      title: "Missing insurance",
+      fix: secured ? "Upload insurance evidence with category Insurance or a filename indicating insurance." : "Consider uploading insurance evidence if applicable.",
+      score_impact: secured ? 10 : 5,
+      evidence: null,
+      status: "new",
+    });
   }
 
   return findings;
@@ -165,6 +308,24 @@ export async function POST(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
+    const { data: existingQueued, error: existingErr } = await supabase
+      .from("submission_runs")
+      .select("id")
+      .eq("submission_id", submissionId)
+      .eq("status", "queued")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (existingErr) {
+      console.error("[submissions/run] Error checking existing run:", existingErr);
+      return NextResponse.json({ error: "Failed to check run" }, { status: 500 });
+    }
+    if (existingQueued) {
+      const existingId = (existingQueued as { id: string }).id;
+      return NextResponse.json({ ok: true, runId: existingId, reused: true });
+    }
+
     const { data: runRow, error: insertRunError } = await supabase
       .from("submission_runs")
       .insert({
@@ -183,7 +344,7 @@ export async function POST(
 
     const { data: filesData, error: filesError } = await supabase
       .from("submission_files")
-      .select("id, category, extraction_status, extracted_text")
+      .select("id, category, extraction_status, extracted_text, display_name, original_filename")
       .eq("submission_id", submissionId);
 
     if (filesError) {
@@ -193,6 +354,17 @@ export async function POST(
 
     const files = (filesData || []) as FileRow[];
     const findings = generateFindings(submissionId, files);
+
+    const { error: deleteFindingsError } = await supabase
+      .from("submission_run_findings")
+      .delete()
+      .eq("run_id", runId);
+
+    if (deleteFindingsError) {
+      console.error("[submissions/run] Error deleting existing findings:", deleteFindingsError);
+      await supabase.from("submission_runs").update({ status: "failed" }).eq("id", runId);
+      return NextResponse.json({ error: "Failed to clear findings for run" }, { status: 500 });
+    }
 
     const findingsToInsert = findings.map((f) => ({
       run_id: runId,
