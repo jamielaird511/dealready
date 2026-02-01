@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createSupabaseAdminClient } from "@/lib/supabase/server";
+import { writeSubmissionFileChunks } from "@/lib/chunking";
 // @ts-expect-error - pdf-parse has no type declarations
 import pdfParse from "pdf-parse";
 
@@ -103,6 +104,17 @@ export async function POST(request: Request) {
         extraction_error: null,
       })
       .eq("id", fileId);
+
+    try {
+      await writeSubmissionFileChunks({
+        supabaseAdmin: supabase,
+        submissionFileId: fileId,
+        extractedText,
+        force: true,
+      });
+    } catch (chunkErr) {
+      console.error("[submission-files/extract] Chunking failed (extraction succeeded):", chunkErr);
+    }
 
     console.log("[submission-files/extract] Extracted text for file:", fileId);
     return NextResponse.json({ ok: true });

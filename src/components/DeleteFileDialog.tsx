@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { createPortal } from "react-dom";
 
 type DeleteFileDialogProps = {
   open: boolean;
@@ -17,25 +18,22 @@ export function DeleteFileDialog({
   onConfirm,
   isDeleting = false,
 }: DeleteFileDialogProps) {
-  if (!open) return null;
-
   async function handleConfirm() {
     await onConfirm();
   }
 
-  return (
+  if (!open) return null;
+
+  const overlay = (
     <div
       style={{
         position: "fixed",
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
+        inset: 0,
         background: "rgba(0,0,0,0.5)",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        zIndex: 1000,
+        zIndex: 9999,
       }}
       onClick={() => {
         if (!isDeleting) {
@@ -50,6 +48,7 @@ export function DeleteFileDialog({
           padding: 24,
           maxWidth: 500,
           width: "90%",
+          boxSizing: "border-box",
         }}
         onClick={(e) => e.stopPropagation()}
       >
@@ -113,4 +112,6 @@ export function DeleteFileDialog({
       </div>
     </div>
   );
+
+  return createPortal(overlay, document.body);
 }

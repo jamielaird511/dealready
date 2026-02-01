@@ -6,7 +6,19 @@ import { useParams, useRouter } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
 import { DeleteFileDialog } from "@/components/DeleteFileDialog";
 
-type SubmissionFileRow = { id?: string; storage_path?: string; display_name?: string; original_filename?: string; created_at?: string; category?: string };
+type SubmissionFileRow = {
+  id?: string;
+  storage_path?: string;
+  display_name?: string;
+  original_filename?: string;
+  created_at?: string;
+  category?: string;
+  extraction_status?: string | null;
+  extracted_at?: string | null;
+  extraction_error?: string | null;
+  extracted_text?: string | null;
+  chunk_count?: number;
+};
 type DealRow = { id?: string; name?: string; status?: string; notes?: string };
 type DealPartyRaw = { id: string; deal_id?: string; roles?: string[]; role?: string | null; notes?: string | null; entities?: unknown; type?: string | null; name?: string | null };
 type DealPartyRow = { id: string; roles?: string[]; role?: string | null };
@@ -20,13 +32,20 @@ function getErrorMessage(e: unknown, fallback: string): string {
   return typeof (e as { message?: unknown })?.message === "string" ? (e as { message: string }).message : fallback;
 }
 
-function FileItem({ file, getDownloadUrl, onDelete }: { file: SubmissionFileRow; getDownloadUrl: (path: string) => Promise<string | null>; onDelete: (fileId: string) => Promise<void> }) {
+function FileItem({ file, getDownloadUrl, onDelete, onRefresh }: { file: SubmissionFileRow; getDownloadUrl: (path: string) => Promise<string | null>; onDelete: (fileId: string) => Promise<void>; onRefresh: () => Promise<void> }) {
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [loadingUrl, setLoadingUrl] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [retrying, setRetrying] = useState(false);
 
-  async function handleDownload() {
+  const status = file.extraction_status ?? "queued";
+  const canPreview = status === "succeeded" && typeof file.extracted_text === "string" && file.extracted_text.length > 0;
+  const canRetry = status === "failed" || status === "queued";
+
+  async function handleDownload(e: React.MouseEvent) {
+    e.stopPropagation();
     if (downloadUrl) {
       window.open(downloadUrl, "_blank");
       return;
@@ -59,75 +78,171 @@ function FileItem({ file, getDownloadUrl, onDelete }: { file: SubmissionFileRow;
     }
   }
 
+  async function handleRetry(e: React.MouseEvent) {
+    e.stopPropagation();
+    if (!file.id || !canRetry || retrying) return;
+    setRetrying(true);
+    try {
+      const extractRes = await fetch("/api/submission-files/extract", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fileId: file.id }),
+      });
+      const extractJson = await extractRes.json().catch(() => ({}));
+      if (!extractJson?.ok) {
+        alert(extractJson?.error ?? "Extraction failed");
+        return;
+      }
+      const chunkRes = await fetch("/api/submission-files/chunk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ submissionFileId: file.id, force: true }),
+      });
+      const chunkJson = await chunkRes.json().catch(() => ({}));
+      if (!chunkJson?.ok && !chunkJson?.skipped) {
+        console.warn("Chunking failed or skipped:", chunkJson?.error);
+      }
+      await onRefresh();
+    } catch (err) {
+      console.error("Retry extraction failed:", err);
+      alert(getErrorMessage(err, "Retry failed"));
+    } finally {
+      setRetrying(false);
+    }
+  }
+
+  const statusPillStyle: React.CSSProperties = {
+    fontSize: 10,
+    fontWeight: 600,
+    padding: "2px 6px",
+    borderRadius: 4,
+    textTransform: "capitalize",
+    flexShrink: 0,
+  };
+  const statusStyles: Record<string, React.CSSProperties> = {
+    queued: { ...statusPillStyle, background: "#f3f4f6", color: "#6b7280" },
+    processing: { ...statusPillStyle, background: "#fef3c7", color: "#92400e" },
+    succeeded: { ...statusPillStyle, background: "#d1fae5", color: "#065f46" },
+    failed: { ...statusPillStyle, background: "#fee2e2", color: "#991b1b" },
+    skipped: { ...statusPillStyle, background: "#e5e7eb", color: "#374151" },
+  };
+
   return (
-    <div
-      style={{
-        borderRadius: 6,
-        padding: 8,
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "center",
-        gap: 12,
-        background: "white",
-        boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
-      }}
-    >
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div 
-          style={{ 
-            fontWeight: 600, 
-            marginBottom: 2, 
-            fontSize: 13,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {file.display_name || file.original_filename}
-        </div>
-        {file.created_at && (
-          <div style={{ fontSize: 11, color: "#6b7280" }}>
-            {new Date(file.created_at).toLocaleDateString()}
+    <>
+      <div
+        style={{
+          borderRadius: 6,
+          padding: 8,
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          gap: 12,
+          background: "white",
+          boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
+        }}
+      >
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2, flexWrap: "wrap" }}>
+            <div
+              style={{
+                fontWeight: 600,
+                fontSize: 13,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {file.display_name || file.original_filename}
+            </div>
+            <span style={statusStyles[status] ?? statusStyles.queued}>{status}</span>
+            {status === "succeeded" && typeof file.chunk_count === "number" && (
+              <span style={{ fontSize: 11, color: "#6b7280" }}>Chunks: {file.chunk_count}</span>
+            )}
           </div>
-        )}
-      </div>
-      <div style={{ display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
-        <button
-          onClick={handleDownload}
-          disabled={loadingUrl}
-          style={{
-            padding: "4px 8px",
-            borderRadius: 6,
-            border: "1px solid rgba(0,0,0,0.2)",
-            cursor: loadingUrl ? "not-allowed" : "pointer",
-            fontWeight: 600,
-            fontSize: 12,
-            opacity: loadingUrl ? 0.6 : 1,
-            background: "white",
-          }}
-        >
-          {loadingUrl ? "Loading..." : "Download"}
-        </button>
-        <button
-          type="button"
-          onClick={() => setDeleteOpen(true)}
-          disabled={deleting}
-          style={{
-            padding: "4px 8px",
-            borderRadius: 6,
-            border: "1px solid #dc2626",
-            background: deleting ? "#fca5a5" : "#fee2e2",
-            color: "#991b1b",
-            cursor: deleting ? "not-allowed" : "pointer",
-            fontWeight: 600,
-            fontSize: 12,
-            opacity: deleting ? 0.6 : 1,
-          }}
-          title={`Delete ${file.display_name || file.original_filename}`}
-          aria-label={`Delete ${file.display_name || file.original_filename}`}
-        >
-          🗑️
-        </button>
+          {file.created_at && (
+            <div style={{ fontSize: 11, color: "#6b7280" }}>
+              {new Date(file.created_at).toLocaleDateString()}
+            </div>
+          )}
+          {status === "failed" && typeof file.extraction_error === "string" && file.extraction_error && (
+            <div style={{ fontSize: 11, color: "#b91c1c", marginTop: 4, maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {file.extraction_error.length > 80 ? file.extraction_error.slice(0, 80) + "…" : file.extraction_error}
+            </div>
+          )}
+        </div>
+        <div style={{ display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); if (canPreview) setPreviewOpen(true); }}
+            disabled={!canPreview}
+            style={{
+              padding: "4px 8px",
+              borderRadius: 6,
+              border: "1px solid rgba(0,0,0,0.2)",
+              cursor: canPreview ? "pointer" : "not-allowed",
+              fontWeight: 600,
+              fontSize: 12,
+              opacity: canPreview ? 1 : 0.5,
+              background: "white",
+            }}
+          >
+            Preview
+          </button>
+          <button
+            type="button"
+            onClick={handleRetry}
+            disabled={!canRetry || retrying}
+            style={{
+              padding: "4px 8px",
+              borderRadius: 6,
+              border: "1px solid #4f46e5",
+              background: "white",
+              color: "#4f46e5",
+              cursor: canRetry && !retrying ? "pointer" : "not-allowed",
+              fontWeight: 600,
+              fontSize: 12,
+              opacity: canRetry && !retrying ? 1 : 0.5,
+            }}
+          >
+            {retrying ? "…" : "Retry"}
+          </button>
+          <button
+            onClick={handleDownload}
+            disabled={loadingUrl}
+            style={{
+              padding: "4px 8px",
+              borderRadius: 6,
+              border: "1px solid rgba(0,0,0,0.2)",
+              cursor: loadingUrl ? "not-allowed" : "pointer",
+              fontWeight: 600,
+              fontSize: 12,
+              opacity: loadingUrl ? 0.6 : 1,
+              background: "white",
+            }}
+          >
+            {loadingUrl ? "Loading..." : "Download"}
+          </button>
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); setDeleteOpen(true); }}
+            disabled={deleting}
+            style={{
+              padding: "4px 8px",
+              borderRadius: 6,
+              border: "1px solid #dc2626",
+              background: deleting ? "#fca5a5" : "#fee2e2",
+              color: "#991b1b",
+              cursor: deleting ? "not-allowed" : "pointer",
+              fontWeight: 600,
+              fontSize: 12,
+              opacity: deleting ? 0.6 : 1,
+            }}
+            title={`Delete ${file.display_name || file.original_filename}`}
+            aria-label={`Delete ${file.display_name || file.original_filename}`}
+          >
+            🗑️
+          </button>
+        </div>
       </div>
       <DeleteFileDialog
         open={deleteOpen}
@@ -136,7 +251,69 @@ function FileItem({ file, getDownloadUrl, onDelete }: { file: SubmissionFileRow;
         onConfirm={confirmDelete}
         isDeleting={deleting}
       />
-    </div>
+      {previewOpen && createPortal(
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.5)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 9999,
+          }}
+          onClick={() => setPreviewOpen(false)}
+        >
+          <div
+            style={{
+              background: "white",
+              borderRadius: 10,
+              maxWidth: "90vw",
+              maxHeight: "80vh",
+              width: 640,
+              display: "flex",
+              flexDirection: "column",
+              boxShadow: "0 4px 20px rgba(0,0,0,0.2)",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ padding: 16, borderBottom: "1px solid #e5e7eb", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontWeight: 700, fontSize: 16 }}>Extracted text: {file.display_name || file.original_filename}</span>
+              <button
+                type="button"
+                onClick={() => setPreviewOpen(false)}
+                style={{
+                  padding: "6px 12px",
+                  borderRadius: 6,
+                  border: "1px solid #d1d5db",
+                  background: "white",
+                  cursor: "pointer",
+                  fontWeight: 600,
+                  fontSize: 13,
+                }}
+              >
+                Close
+              </button>
+            </div>
+            <pre
+              style={{
+                flex: 1,
+                margin: 0,
+                padding: 16,
+                overflow: "auto",
+                fontSize: 12,
+                lineHeight: 1.5,
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+              }}
+            >
+              {file.extracted_text ?? ""}
+            </pre>
+          </div>
+        </div>,
+        document.body
+      )}
+    </>
   );
 }
 
@@ -222,6 +399,45 @@ export default function DealPage() {
   const [latestFindings, setLatestFindings] = useState<FindingRow[]>([]);
   const [latestRunLoading, setLatestRunLoading] = useState(false);
   const [latestRunError, setLatestRunError] = useState<string | null>(null);
+
+  async function loadFilesWithChunkCounts(submissionId: string): Promise<SubmissionFileRow[]> {
+    const supabase = supabaseBrowser();
+    const { data: filesData, error } = await supabase
+      .from("submission_files")
+      .select("*")
+      .eq("submission_id", submissionId)
+      .order("created_at", { ascending: false });
+    if (error) throw error;
+    const list = (filesData || []) as SubmissionFileRow[];
+    const ids = list.map((f) => f.id).filter((id): id is string => Boolean(id));
+    const counts: Record<string, number> = {};
+    if (ids.length > 0) {
+      const { data: chunkRows } = await supabase
+        .from("submission_file_chunks")
+        .select("submission_file_id")
+        .in("submission_file_id", ids);
+      if (chunkRows && Array.isArray(chunkRows)) {
+        (chunkRows as { submission_file_id: string }[]).forEach((r) => {
+          counts[r.submission_file_id] = (counts[r.submission_file_id] ?? 0) + 1;
+        });
+      }
+    }
+    return list.map((f) => ({ ...f, chunk_count: counts[f.id!] ?? 0 }));
+  }
+
+  async function refreshFiles() {
+    if (!activeSubmissionId) return;
+    setFilesLoading(true);
+    try {
+      const merged = await loadFilesWithChunkCounts(activeSubmissionId);
+      setFiles(merged);
+      setFilesError(null);
+    } catch (e) {
+      setFilesError(e instanceof Error ? e.message : "Failed to refresh files");
+    } finally {
+      setFilesLoading(false);
+    }
+  }
 
   useEffect(() => {
     async function loadDeal() {
@@ -321,20 +537,16 @@ export default function DealPage() {
 
       setActiveSubmissionId(submissionId);
 
-      // Load files
+      // Load files with chunk counts
       setFilesLoading(true);
-      const { data: filesData, error: filesError } = await supabase
-        .from("submission_files")
-        .select("*")
-        .eq("submission_id", submissionId)
-        .order("created_at", { ascending: false });
-
-      if (filesError) {
-        console.error("Error loading files:", filesError);
-        setFilesError(filesError.message);
-      } else {
+      try {
+        const merged = await loadFilesWithChunkCounts(submissionId);
         setFilesError(null);
-        setFiles(filesData || []);
+        setFiles(merged);
+      } catch (filesError: unknown) {
+        console.error("Error loading files:", filesError);
+        setFilesError(filesError instanceof Error ? filesError.message : "Failed to load files");
+        setFiles([]);
       }
       setFilesLoading(false);
     }
@@ -837,12 +1049,7 @@ export default function DealPage() {
         return;
       }
 
-      if (insertedFile?.id) {
-        console.log("[Deal upload] Inserted file id:", insertedFile.id, "- extraction triggered");
-        fetch("/api/submission-files/extract", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ fileId: insertedFile.id }) }).catch(()=>{});
-      }
-
-      // Refresh files list
+      // Refresh files list so new file appears
       const { data: refreshedFiles } = await supabase
         .from("submission_files")
         .select("*")
@@ -851,6 +1058,19 @@ export default function DealPage() {
 
       if (refreshedFiles) {
         setFiles(refreshedFiles);
+      }
+
+      if (insertedFile?.id) {
+        console.log("[Deal upload] Inserted file id:", insertedFile.id, "- extraction triggered");
+        const extractRes = await fetch("/api/submission-files/extract", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ fileId: insertedFile.id }),
+        });
+        const extractJson = await extractRes.json().catch(() => ({}));
+        if (extractJson?.ok || extractJson?.alreadyExtracted) {
+          await refreshFiles();
+        }
       }
 
       // Reset modal
@@ -2384,7 +2604,7 @@ export default function DealPage() {
                     {isExpanded && (
                       <div style={{ padding: "0 12px 8px 12px", display: "flex", flexDirection: "column", gap: 6 }}>
                         {category.files.map((file) => (
-                  <FileItem key={file.id} file={file} getDownloadUrl={getDownloadUrl} onDelete={handleDeleteFile} />
+                  <FileItem key={file.id} file={file} getDownloadUrl={getDownloadUrl} onDelete={handleDeleteFile} onRefresh={refreshFiles} />
                 ))}
                       </div>
                 )}
@@ -2396,20 +2616,17 @@ export default function DealPage() {
         })()}
       </div>
 
-      {/* Upload Modal */}
-      {showUploadModal && (
+      {/* Upload Modal - portaled to body so it appears above sticky header */}
+      {showUploadModal && mounted && createPortal(
         <div
           style={{
             position: "fixed",
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
+            inset: 0,
             background: "rgba(0,0,0,0.5)",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            zIndex: 1000,
+            zIndex: 9999,
           }}
           onClick={() => {
             if (!uploading) {
@@ -2428,7 +2645,7 @@ export default function DealPage() {
               maxWidth: 500,
               width: "90%",
               maxHeight: "90vh",
-              overflow: "auto",
+              overflow: "visible",
             }}
             onClick={(e) => e.stopPropagation()}
           >
@@ -2581,7 +2798,8 @@ export default function DealPage() {
               </div>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
       {/* Rename Deal Modal - Portal */}
