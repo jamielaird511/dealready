@@ -6,6 +6,8 @@ import { supabaseBrowser } from "@/lib/supabaseBrowser";
 
 type SubmissionRow = { id: string; deal_id?: string; title?: string; status?: string; created_at?: string; updated_at?: string };
 type SubmissionFileRow = { id?: string; storage_path?: string; original_filename?: string; created_at?: string; doc_type?: string | null; doc_type_confidence?: number | null; doc_type_ran_at?: string | null };
+type RunRow = { id: string; submission_id?: string; status?: string; score?: number; assessment_status?: string; top_fixes?: string[]; assessed_at?: string | null; created_at?: string };
+type FindingRow = { id?: string; run_id: string; title?: string | null; severity?: string | null; category?: string | null; message?: string | null; fix?: string | null; score_impact?: number | null; workflow_state?: string | null; created_at?: string | null };
 type SupabaseErrorLike = { message?: string; details?: unknown; hint?: string; code?: string };
 
 function FileItem({ file, getDownloadUrl }: { file: SubmissionFileRow; getDownloadUrl: (path: string) => Promise<string | null> }) {
@@ -106,6 +108,9 @@ export default function SubmissionPage() {
   const [filesLoading, setFilesLoading] = useState(true);
   const [filesError, setFilesError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [latestRun, setLatestRun] = useState<RunRow | null>(null);
+  const [latestRunLoading, setLatestRunLoading] = useState(false);
+  const [latestFindings, setLatestFindings] = useState<FindingRow[]>([]);
 
   useEffect(() => {
     async function loadSubmission() {
@@ -168,6 +173,42 @@ export default function SubmissionPage() {
 
     if (submissionId && !loading) {
       loadFiles();
+    }
+  }, [submissionId, loading]);
+
+  useEffect(() => {
+    async function loadLatestRun() {
+      if (!submissionId) return;
+      const supabase = supabaseBrowser();
+      setLatestRunLoading(true);
+      const { data: runs, error: runsError } = await supabase
+        .from("submission_runs")
+        .select("*")
+        .eq("submission_id", submissionId)
+        .order("created_at", { ascending: false })
+        .limit(1);
+      if (runsError || !runs?.length) {
+        setLatestRun(null);
+        setLatestFindings([]);
+        setLatestRunLoading(false);
+        return;
+      }
+      const run = runs[0] as RunRow;
+      setLatestRun(run);
+      const { data: findingsData, error: findingsError } = await supabase
+        .from("submission_run_findings")
+        .select("*")
+        .eq("run_id", run.id)
+        .order("created_at", { ascending: false });
+      if (findingsError) {
+        setLatestFindings([]);
+      } else {
+        setLatestFindings((findingsData || []) as FindingRow[]);
+      }
+      setLatestRunLoading(false);
+    }
+    if (submissionId && !loading) {
+      loadLatestRun();
     }
   }, [submissionId, loading]);
 
@@ -481,7 +522,7 @@ export default function SubmissionPage() {
         )}
       </div>
 
-      {/* Findings / Requests Section */}
+      {/* Assessment (latest run + findings) */}
       <div
         style={{
           border: "1px solid rgba(0,0,0,0.2)",
@@ -492,11 +533,110 @@ export default function SubmissionPage() {
         }}
       >
         <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 16 }}>
-          Findings / Requests
+          Assessment
         </h2>
-        <p style={{ fontSize: 14, opacity: 0.6 }}>
-          Submission findings and requests will be displayed here.
-        </p>
+        {latestRunLoading ? (
+          <p style={{ fontSize: 14, opacity: 0.6 }}>Loading run…</p>
+        ) : !latestRun ? (
+          <>
+            <p style={{ fontSize: 14, opacity: 0.6, marginBottom: 12 }}>No runs yet.</p>
+            <p style={{ fontSize: 13, opacity: 0.7 }}>
+              Run assessment from the deal page (Upload Pack section) to see status, score, and findings here.
+            </p>
+            {submission?.deal_id && (
+              <button
+                type="button"
+                onClick={() => router.push(`/app/deals/${submission.deal_id}`)}
+                style={{
+                  marginTop: 12,
+                  padding: "8px 14px",
+                  borderRadius: 8,
+                  border: "1px solid rgba(0,0,0,0.2)",
+                  cursor: "pointer",
+                  fontWeight: 600,
+                  fontSize: 14,
+                }}
+              >
+                Go to deal
+              </button>
+            )}
+          </>
+        ) : (
+          <>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginBottom: 16, fontSize: 14 }}>
+              {typeof latestRun.score === "number" && (
+                <span><strong>Score:</strong> {latestRun.score}</span>
+              )}
+              {latestRun.assessment_status && (
+                <span><strong>Status:</strong> {String(latestRun.assessment_status).replace(/_/g, " ")}</span>
+              )}
+              {latestRun.assessed_at && (
+                <span><strong>Assessed:</strong> {new Date(latestRun.assessed_at).toLocaleString()}</span>
+              )}
+            </div>
+            {Array.isArray(latestRun.top_fixes) && latestRun.top_fixes.length > 0 && (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, color: "#374151" }}>Top fixes</div>
+                <ul style={{ margin: 0, paddingLeft: 20, fontSize: 13, color: "#4b5563" }}>
+                  {latestRun.top_fixes.map((fix, i) => (
+                    <li key={i} style={{ marginBottom: 4 }}>{fix}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, color: "#374151" }}>Findings</div>
+            {latestFindings.length === 0 ? (
+              <p style={{ fontSize: 14, opacity: 0.6 }}>No findings for latest run.</p>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {latestFindings.map((f, i) => (
+                  <div
+                    key={f.id ?? i}
+                    style={{
+                      padding: 12,
+                      borderRadius: 8,
+                      border: "1px solid #e5e7eb",
+                      background: "#f9fafb",
+                      fontSize: 13,
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                      {f.severity && (
+                        <span
+                          style={{
+                            padding: "2px 6px",
+                            borderRadius: 4,
+                            fontSize: 11,
+                            fontWeight: 600,
+                            textTransform: "capitalize",
+                            background: f.severity === "critical" ? "#fee2e2" : f.severity === "warning" ? "#fef3c7" : "#e0e7ff",
+                            color: f.severity === "critical" ? "#991b1b" : f.severity === "warning" ? "#92400e" : "#3730a3",
+                          }}
+                        >
+                          {f.severity}
+                        </span>
+                      )}
+                      {f.workflow_state && (
+                        <span style={{ fontSize: 11, opacity: 0.8 }}>{String(f.workflow_state).replace(/_/g, " ")}</span>
+                      )}
+                      {f.title && <span style={{ fontWeight: 600, color: "#374151" }}>{f.title}</span>}
+                    </div>
+                    {f.category && <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>{f.category}</div>}
+                    {f.message && <p style={{ margin: "0 0 6px 0", color: "#4b5563" }}>{f.message}</p>}
+                    {f.fix && <p style={{ margin: 0, fontSize: 12, color: "#6b7280" }}><strong>Fix:</strong> {f.fix}</p>}
+                    {(f.score_impact != null || f.created_at) && (
+                      <div style={{ marginTop: 6, fontSize: 11, opacity: 0.6 }}>
+                        {f.score_impact != null && `Impact: ${f.score_impact}`}
+                        {f.score_impact != null && f.created_at && " · "}
+                        {f.created_at && `Created: ${new Date(f.created_at).toLocaleString()}`}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
       </div>
     </main>
   );
