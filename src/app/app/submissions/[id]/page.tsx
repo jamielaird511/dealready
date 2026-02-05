@@ -111,6 +111,8 @@ export default function SubmissionPage() {
   const [latestRun, setLatestRun] = useState<RunRow | null>(null);
   const [latestRunLoading, setLatestRunLoading] = useState(false);
   const [latestFindings, setLatestFindings] = useState<FindingRow[]>([]);
+  const [runNowLoading, setRunNowLoading] = useState(false);
+  const [runNowError, setRunNowError] = useState<string | null>(null);
 
   useEffect(() => {
     async function loadSubmission() {
@@ -176,37 +178,38 @@ export default function SubmissionPage() {
     }
   }, [submissionId, loading]);
 
-  useEffect(() => {
-    async function loadLatestRun() {
-      if (!submissionId) return;
-      const supabase = supabaseBrowser();
-      setLatestRunLoading(true);
-      const { data: runs, error: runsError } = await supabase
-        .from("submission_runs")
-        .select("*")
-        .eq("submission_id", submissionId)
-        .order("created_at", { ascending: false })
-        .limit(1);
-      if (runsError || !runs?.length) {
-        setLatestRun(null);
-        setLatestFindings([]);
-        setLatestRunLoading(false);
-        return;
-      }
-      const run = runs[0] as RunRow;
-      setLatestRun(run);
-      const { data: findingsData, error: findingsError } = await supabase
-        .from("submission_run_findings")
-        .select("*")
-        .eq("run_id", run.id)
-        .order("created_at", { ascending: false });
-      if (findingsError) {
-        setLatestFindings([]);
-      } else {
-        setLatestFindings((findingsData || []) as FindingRow[]);
-      }
+  async function loadLatestRun() {
+    if (!submissionId) return;
+    const supabase = supabaseBrowser();
+    setLatestRunLoading(true);
+    const { data: runs, error: runsError } = await supabase
+      .from("submission_runs")
+      .select("*")
+      .eq("submission_id", submissionId)
+      .order("created_at", { ascending: false })
+      .limit(1);
+    if (runsError || !runs?.length) {
+      setLatestRun(null);
+      setLatestFindings([]);
       setLatestRunLoading(false);
+      return;
     }
+    const run = runs[0] as RunRow;
+    setLatestRun(run);
+    const { data: findingsData, error: findingsError } = await supabase
+      .from("submission_run_findings")
+      .select("*")
+      .eq("run_id", run.id)
+      .order("created_at", { ascending: false });
+    if (findingsError) {
+      setLatestFindings([]);
+    } else {
+      setLatestFindings((findingsData || []) as FindingRow[]);
+    }
+    setLatestRunLoading(false);
+  }
+
+  useEffect(() => {
     if (submissionId && !loading) {
       loadLatestRun();
     }
@@ -535,6 +538,12 @@ export default function SubmissionPage() {
         <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 16 }}>
           Assessment
         </h2>
+        {runNowLoading && (
+          <p style={{ fontSize: 14, opacity: 0.6, marginBottom: 12 }}>Running assessment…</p>
+        )}
+        {runNowError && (
+          <div style={{ fontSize: 14, color: "crimson", marginBottom: 12, padding: 10, borderRadius: 8, background: "#fef2f2", border: "1px solid #fecaca" }}>Error: {runNowError}</div>
+        )}
         {latestRunLoading ? (
           <p style={{ fontSize: 14, opacity: 0.6 }}>Loading run…</p>
         ) : !latestRun ? (
@@ -637,6 +646,43 @@ export default function SubmissionPage() {
             )}
           </>
         )}
+        <button
+          type="button"
+          onClick={async () => {
+            if (!submissionId || runNowLoading) return;
+            setRunNowLoading(true);
+            setRunNowError(null);
+            try {
+              const res = await fetch(`/api/submissions/${submissionId}/run`, { method: "POST", credentials: "include" });
+              const json = await res.json().catch(() => ({}));
+              if (res.ok && json?.ok) {
+                await loadLatestRun();
+              } else {
+                setRunNowError(json?.error ?? "Failed to run assessment");
+              }
+            } catch (err) {
+              console.error("Run assessment failed:", err);
+              setRunNowError(err instanceof Error ? err.message : "Failed to run assessment");
+            } finally {
+              setRunNowLoading(false);
+            }
+          }}
+          disabled={runNowLoading}
+          style={{
+            marginTop: 20,
+            padding: "8px 16px",
+            fontSize: 14,
+            fontWeight: 600,
+            borderRadius: 8,
+            border: "1px solid #4f46e5",
+            background: runNowLoading ? "#c7d2fe" : "#4f46e5",
+            color: "white",
+            cursor: runNowLoading ? "not-allowed" : "pointer",
+            opacity: runNowLoading ? 0.8 : 1,
+          }}
+        >
+          {runNowLoading ? "Running…" : "Run assessment"}
+        </button>
       </div>
     </main>
   );
