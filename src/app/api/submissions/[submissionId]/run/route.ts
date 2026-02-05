@@ -437,6 +437,38 @@ export async function POST(
 
     const runId = (runRow as { id: string }).id;
 
+    // Load previous completed run (if any) to carry over finding state
+    const { data: prevRun } = await supabase
+      .from("submission_runs")
+      .select("id")
+      .eq("submission_id", submissionId)
+      .eq("status", "completed")
+      .neq("id", runId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    let prevFindingsByKey = new Map<string, {
+      workflow_state?: string | null;
+      acknowledged_at?: string | null;
+      resolved_at?: string | null;
+    }>();
+
+    if (prevRun?.id) {
+      const { data: prevFindings } = await supabase
+        .from("submission_run_findings")
+        .select("finding_id, workflow_state, acknowledged_at, resolved_at")
+        .eq("run_id", prevRun.id);
+
+      for (const f of prevFindings ?? []) {
+        prevFindingsByKey.set(f.finding_id, {
+          workflow_state: f.workflow_state,
+          acknowledged_at: f.acknowledged_at,
+          resolved_at: f.resolved_at,
+        });
+      }
+    }
+
     const { data: filesData, error: filesError } = await supabase
       .from("submission_files")
       .select("id, category, extraction_status, extracted_text, display_name, original_filename, extracted_at, doc_type, doc_type_ran_at")
@@ -480,18 +512,28 @@ export async function POST(
       return NextResponse.json({ error: "Failed to clear findings for run" }, { status: 500 });
     }
 
-    const findingsToInsert = findings.map((f) => ({
-      run_id: runId,
-      severity: f.severity,
-      category: f.category,
-      message: f.message,
-      finding_id: f.finding_id,
-      title: f.title,
-      fix: f.fix,
-      score_impact: f.score_impact,
-      evidence: f.evidence,
-      status: f.status,
-    }));
+    const findingsToInsert = findings.map((f) => {
+      const prev = prevFindingsByKey.get(f.finding_id);
+
+      return {
+        run_id: runId,
+        severity: f.severity,
+        category: f.category,
+        message: f.message,
+        finding_id: f.finding_id,
+        title: f.title,
+        fix: f.fix,
+        score_impact: f.score_impact,
+        evidence: f.evidence,
+        status: f.status,
+
+        // carry over state if this finding existed before
+        workflow_state: prev?.workflow_state ?? "open",
+        acknowledged_at: prev?.acknowledged_at ?? null,
+        resolved_at: prev?.resolved_at ?? null,
+        state_changed_at: new Date().toISOString(),
+      };
+    });
 
     if (findingsToInsert.length > 0) {
       const { error: insertFindingsError } = await supabase
