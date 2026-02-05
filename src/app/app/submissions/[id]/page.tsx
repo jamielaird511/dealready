@@ -5,7 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
 
 type SubmissionRow = { id: string; deal_id?: string; title?: string; status?: string; created_at?: string; updated_at?: string };
-type SubmissionFileRow = { id?: string; storage_path?: string; original_filename?: string; created_at?: string };
+type SubmissionFileRow = { id?: string; storage_path?: string; original_filename?: string; created_at?: string; doc_type?: string | null; doc_type_confidence?: number | null; doc_type_ran_at?: string | null };
 type SupabaseErrorLike = { message?: string; details?: unknown; hint?: string; code?: string };
 
 function FileItem({ file, getDownloadUrl }: { file: SubmissionFileRow; getDownloadUrl: (path: string) => Promise<string | null> }) {
@@ -47,6 +47,28 @@ function FileItem({ file, getDownloadUrl }: { file: SubmissionFileRow; getDownlo
         <div style={{ fontWeight: 600, marginBottom: 4, fontSize: 14 }}>
           {file.original_filename}
         </div>
+        {file.doc_type && (
+          <span
+            style={{
+              display: "inline-block",
+              marginBottom: 4,
+              padding: "2px 8px",
+              borderRadius: 6,
+              fontSize: 12,
+              fontWeight: 500,
+              background: "#e5e7eb",
+              color: "#374151",
+            }}
+          >
+            {file.doc_type.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
+            {typeof file.doc_type_confidence === "number" && ` · ${Math.round(file.doc_type_confidence * 100)}%`}
+          </span>
+        )}
+        {file.doc_type_ran_at && (
+          <div style={{ fontSize: 12, opacity: 0.6 }}>
+            Classified: {new Date(file.doc_type_ran_at).toLocaleString()}
+          </div>
+        )}
         {file.created_at && (
           <div style={{ fontSize: 12, opacity: 0.6 }}>
             Uploaded: {new Date(file.created_at).toLocaleString()}

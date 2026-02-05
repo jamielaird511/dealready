@@ -8,6 +8,9 @@ type FileRow = {
   extracted_text?: string | null;
   display_name?: string | null;
   original_filename?: string | null;
+  extracted_at?: string | null;
+  doc_type?: string | null;
+  doc_type_ran_at?: string | null;
 };
 
 type FindingRow = {
@@ -53,6 +56,98 @@ function hasSecuredEvidence(files: FileRow[]): boolean {
     const combined = `${cat} ${name} ${orig}`;
     return keywords.some((kw) => combined.includes(kw.toLowerCase()));
   });
+}
+
+const ALLOWED_DOC_TYPES = [
+  "bank_statement", "financial_statement", "tax_return", "id_document", "drivers_license", "passport",
+  "payslip", "rental_statement", "valuation_report", "insurance_schedule", "loan_facility_letter",
+  "trust_deed", "company_documents", "other",
+] as const;
+const MAX_INPUT_LENGTH_CLASSIFY = 12_000;
+const CLASSIFY_MODEL = "gpt-4o-mini";
+
+async function classifyOneFile(
+  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
+  fileId: string
+): Promise<void> {
+  const { data: chunksData, error: chunksError } = await supabase
+    .from("submission_file_chunks")
+    .select("content, chunk_index")
+    .eq("submission_file_id", fileId)
+    .order("chunk_index", { ascending: true });
+
+  if (chunksError || !chunksData?.length) throw new Error(chunksError?.message ?? "No chunks");
+
+  const fullText = (chunksData as { content?: string | null }[])
+    .map((c) => (c.content ?? "").trim())
+    .filter(Boolean)
+    .join("\n\n");
+  const cappedText = fullText.slice(0, MAX_INPUT_LENGTH_CLASSIFY);
+
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) throw new Error("OPENAI_API_KEY not set");
+
+  const systemPrompt = `You classify document text into exactly one doc_type. Reply with valid JSON only, no markdown or extra text.
+Output shape must be exactly:
+{"doc_type": "<one of allowed>", "confidence": <number 0-1>, "reasons": ["<short reason>", ...]}
+Allowed doc_type values (use exactly one): ${ALLOWED_DOC_TYPES.join(", ")}`;
+
+  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({
+      model: CLASSIFY_MODEL,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: `Classify this document. Return only the JSON object.\n\n${cappedText}` },
+      ],
+      temperature: 0.2,
+      max_tokens: 300,
+    }),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    throw new Error(`OpenAI ${res.status}: ${errText.slice(0, 100)}`);
+  }
+
+  const data = (await res.json().catch(() => null)) as { choices?: Array<{ message?: { content?: string } }> } | null;
+  const content = data?.choices?.[0]?.message?.content?.trim();
+  if (!content) throw new Error("No content in OpenAI response");
+
+  let parsed: { doc_type: string; confidence: number; reasons: string[] };
+  try {
+    const o = JSON.parse(content) as Record<string, unknown>;
+    const doc_type = typeof o.doc_type === "string" ? o.doc_type.trim() : "other";
+    let confidence = typeof o.confidence === "number" ? o.confidence : 0;
+    confidence = Math.max(0, Math.min(1, confidence));
+    let reasons = Array.isArray(o.reasons) ? o.reasons : [];
+    reasons = (reasons as string[])
+      .filter((r): r is string => typeof r === "string")
+      .map((r) => r.trim().slice(0, 200))
+      .filter(Boolean)
+      .slice(0, 5);
+    if (reasons.length === 0) reasons = ["Classification completed"];
+    parsed = { doc_type, confidence, reasons };
+  } catch {
+    throw new Error("Invalid JSON from model");
+  }
+
+  const doc_type = ALLOWED_DOC_TYPES.includes(parsed.doc_type as (typeof ALLOWED_DOC_TYPES)[number]) ? parsed.doc_type : "other";
+  const confidence = Math.max(0, Math.min(1, parsed.confidence));
+
+  const { error: updateError } = await supabase
+    .from("submission_files")
+    .update({
+      doc_type,
+      doc_type_confidence: confidence,
+      doc_type_reasons: parsed.reasons,
+      doc_type_model: CLASSIFY_MODEL,
+      doc_type_ran_at: new Date().toISOString(),
+    })
+    .eq("id", fileId);
+
+  if (updateError) throw new Error(updateError.message);
 }
 
 function generateFindings(submissionId: string, files: FileRow[]): FindingRow[] {
@@ -344,7 +439,7 @@ export async function POST(
 
     const { data: filesData, error: filesError } = await supabase
       .from("submission_files")
-      .select("id, category, extraction_status, extracted_text, display_name, original_filename")
+      .select("id, category, extraction_status, extracted_text, display_name, original_filename, extracted_at, doc_type, doc_type_ran_at")
       .eq("submission_id", submissionId);
 
     if (filesError) {
@@ -353,6 +448,25 @@ export async function POST(
     }
 
     const files = (filesData || []) as FileRow[];
+
+    const eligibleForClassify = files.filter((f) => {
+      if ((f.extraction_status ?? "") !== "succeeded") return false;
+      const docType = f.doc_type ?? null;
+      const ranAt = f.doc_type_ran_at ?? null;
+      const extractedAt = f.extracted_at ?? null;
+      if (docType === null || ranAt === null) return true;
+      if (extractedAt !== null && ranAt !== null && new Date(extractedAt) > new Date(ranAt)) return true;
+      return false;
+    });
+    for (const f of eligibleForClassify) {
+      if (!f.id) continue;
+      try {
+        await classifyOneFile(supabase, f.id);
+      } catch (err) {
+        console.error("[submissions/run] Classify failed:", f.id, err instanceof Error ? err.message : err);
+      }
+    }
+
     const findings = generateFindings(submissionId, files);
 
     const { error: deleteFindingsError } = await supabase

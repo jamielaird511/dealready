@@ -21,6 +21,22 @@ export default function AppHome() {
         return;
       }
 
+      const { data: membership, error: membershipError } = await supabase
+        .from("organization_members")
+        .select("organization_id")
+        .eq("user_id", user.id)
+        .limit(1)
+        .maybeSingle();
+
+      if (membershipError || !membership) {
+        console.error("Error creating deal (membership):", membershipError ?? "No membership");
+        alert("No organization membership found for this user.");
+        setCreating(false);
+        return;
+      }
+
+      const organizationId = (membership as { organization_id: string }).organization_id;
+
       // Insert a new deal
       const { data: deal, error } = await supabase
         .from("deals")
@@ -28,18 +44,20 @@ export default function AppHome() {
           broker_id: user.id,
           name: "New Deal",
           status: "draft",
+          organization_id: organizationId,
         })
         .select()
         .single();
 
       if (error) {
-        console.error("Error creating deal:", {
-          message: error.message,
-          details: error.details,
-          hint: error.hint,
-          code: error.code,
+        console.error("Error creating deal (raw):", error);
+        console.error("Error creating deal (details):", {
+          message: (error as { message?: string })?.message,
+          details: (error as { details?: unknown })?.details,
+          hint: (error as { hint?: string })?.hint,
+          code: (error as { code?: string })?.code,
         });
-        alert("Error creating deal. Please ensure the deals table exists in your database.");
+        alert(`Error creating deal: ${error?.message ?? "Unknown error"}`);
         setCreating(false);
         return;
       }
@@ -47,7 +65,15 @@ export default function AppHome() {
       // Route to the new deal
       router.push(`/app/deals/${deal.id}`);
     } catch (err) {
-      console.error("Error:", err);
+      console.error("Error creating deal (raw):", err);
+      console.error("Error creating deal (details):", {
+        message: err instanceof Error ? err.message : (err as { message?: string })?.message,
+        details: (err as { details?: unknown })?.details,
+        hint: (err as { hint?: string })?.hint,
+        code: (err as { code?: string })?.code,
+      });
+      const message = err instanceof Error ? err.message : (err as { message?: string })?.message;
+      alert(`Error creating deal: ${message ?? "Unknown error"}`);
       setCreating(false);
     }
   }

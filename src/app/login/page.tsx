@@ -1,11 +1,13 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
 
 export default function LoginPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const nextPath = searchParams.get("next") ?? "/app";
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -33,7 +35,8 @@ export default function LoginPage() {
         return;
       }
 
-      router.replace("/app");
+      console.log("[login] redirecting to", nextPath);
+      window.location.href = nextPath;
     } finally {
       setLoading(false);
     }

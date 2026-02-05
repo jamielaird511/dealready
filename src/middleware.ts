@@ -32,6 +32,18 @@ export async function middleware(req: NextRequest) {
 
   if (isAsset) return res;
 
+  // If user is already authenticated, don't let them sit on /login
+  if (pathname.startsWith("/login")) {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (user) {
+      const url = req.nextUrl.clone();
+      url.pathname = "/app";
+      url.search = "";
+      return NextResponse.redirect(url);
+    }
+    return res;
+  }
+
   // Public routes (must NOT be blocked)
   const isPublic =
     pathname === "/" ||
@@ -60,7 +72,7 @@ export async function middleware(req: NextRequest) {
       error,
     } = await supabase.auth.getUser();
 
-    if (!user || error) {
+    if (!user) {
       // Not authenticated - redirect to appropriate login
       const url = req.nextUrl.clone();
       if (isAdminRoute) {
