@@ -82,10 +82,12 @@ export default function DealsPage() {
       const { data: findings, error: findingsError } = await supabase
         .from("submission_run_findings")
         .select("severity, status, workflow_state")
-        .eq("run_id", latestRun.id);
+        .eq("run_id", latestRun.id)
+        .order("created_at", { ascending: false });
 
       if (findingsError) {
-        console.error("Error loading findings for deal:", dealId, findingsError);
+        const err = findingsError as { code?: string; message?: string; details?: unknown; hint?: string };
+        console.error("Findings error", { dealId, runId: latestRun?.id, code: err?.code, message: err?.message, details: err?.details, hint: err?.hint });
         setDealSenseData((prev) => ({
           ...prev,
           [dealId]: { ...initialDealSense, latestSubmissionId: submissionId, latestRun, loading: false, error: "Failed to load findings" },

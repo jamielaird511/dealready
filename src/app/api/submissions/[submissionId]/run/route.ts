@@ -207,6 +207,30 @@ function generateFindings(submissionId: string, files: FileRow[]): FindingRow[] 
     }
   }
 
+  // Warning when Financials files exist but combined content does not look like financial statements
+  if (financialFiles.length > 0) {
+    const financialsContentKeywords = ["profit", "loss", "revenue", "sales", "expenses", "ebit", "balance sheet", "assets", "liabilities", "equity", "gst", "income tax"];
+    const combinedText = financialFiles
+      .map((f) => (f.extracted_text ?? "").trim())
+      .join(" ")
+      .toLowerCase();
+    const keywordCount = financialsContentKeywords.filter((kw) => combinedText.includes(kw)).length;
+    if (keywordCount < 1) {
+      findings.push({
+        run_id: "",
+        severity: "warning",
+        category: "documents",
+        message: "Content of file(s) categorised as Financials does not appear to contain financial statement content. Consider uploading actual financial statements (P&L, balance sheet, or tax documents).",
+        finding_id: "financials_suspect_content",
+        title: "Financials may be wrong document",
+        fix: "Upload actual financial statements (e.g. P&L, balance sheet) or re-categorise the file if it is not a financial document.",
+        score_impact: 5,
+        evidence: null,
+        status: "new",
+      });
+    }
+  }
+
   const missingDocChecks: Array<{
     finding_id: string;
     title: string;

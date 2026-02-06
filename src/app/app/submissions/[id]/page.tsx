@@ -3,37 +3,104 @@
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
+import { AssessmentCard } from "@/components/AssessmentCard";
+import { DeleteFileDialog } from "@/components/DeleteFileDialog";
 
 type SubmissionRow = { id: string; deal_id?: string; title?: string; status?: string; created_at?: string; updated_at?: string };
-type SubmissionFileRow = { id?: string; storage_path?: string; original_filename?: string; created_at?: string; doc_type?: string | null; doc_type_confidence?: number | null; doc_type_ran_at?: string | null };
+type SubmissionFileRow = {
+  id?: string;
+  storage_path?: string;
+  original_filename?: string;
+  created_at?: string;
+  display_name?: string | null;
+  category?: string | null;
+  mime_type?: string | null;
+  size_bytes?: number | null;
+  extracted_text?: string | null;
+  extraction_status?: string | null;
+  extraction_error?: string | null;
+  extracted_at?: string | null;
+  extracted_len?: number | null;
+  doc_type?: string | null;
+  doc_type_confidence?: number | null;
+  doc_type_ran_at?: string | null;
+};
 type RunRow = { id: string; submission_id?: string; status?: string; score?: number; assessment_status?: string; top_fixes?: string[]; assessed_at?: string | null; created_at?: string };
 type FindingRow = { id?: string; run_id: string; title?: string | null; severity?: string | null; category?: string | null; message?: string | null; fix?: string | null; score_impact?: number | null; workflow_state?: string | null; created_at?: string | null };
 type SupabaseErrorLike = { message?: string; details?: unknown; hint?: string; code?: string };
 
-function FileItem({ file, getDownloadUrl }: { file: SubmissionFileRow; getDownloadUrl: (path: string) => Promise<string | null> }) {
-  const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
+function formatCategory(cat: string | null | undefined): string {
+  if (!cat) return "";
+  return cat.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function FileItem({
+  file,
+  getDownloadUrl,
+  onRefresh,
+  onRequestDelete,
+}: {
+  file: SubmissionFileRow;
+  getDownloadUrl: (path: string) => Promise<string | null>;
+  onRefresh: () => void;
+  onRequestDelete: (file: SubmissionFileRow) => void;
+}) {
   const [loadingUrl, setLoadingUrl] = useState(false);
+  const [retrying, setRetrying] = useState(false);
+  const [showPreviewModal, setShowPreviewModal] = useState(false);
 
-  async function handleDownload() {
-    if (downloadUrl) {
-      window.open(downloadUrl, "_blank");
-      return;
-    }
+  const title = file.display_name ?? file.original_filename ?? "File";
+  const showSubline = file.display_name != null && file.original_filename != null && file.display_name !== file.original_filename;
+
+  function handlePreview() {
+    setShowPreviewModal(true);
+  }
+
+  async function handleOpenPdf() {
     if (!file.storage_path) return;
-
     setLoadingUrl(true);
     const url = await getDownloadUrl(file.storage_path);
-    setDownloadUrl(url);
     setLoadingUrl(false);
+    if (url) window.open(url, "_blank");
+    else alert("Error generating link.");
+  }
 
-    if (url) {
-      window.open(url, "_blank");
-    } else {
-      alert("Error generating download link. Please try again.");
+  async function handleDownload() {
+    if (!file.storage_path) return;
+    setLoadingUrl(true);
+    const url = await getDownloadUrl(file.storage_path);
+    setLoadingUrl(false);
+    if (url) window.open(url, "_blank");
+    else alert("Error generating download link. Please try again.");
+  }
+
+  async function handleRetryExtract() {
+    if (!file.id || retrying) return;
+    setRetrying(true);
+    try {
+      const res = await fetch("/api/submission-files/extract", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fileId: file.id }),
+      });
+      if (res.ok) onRefresh();
+      else alert("Retry failed. Check console.");
+    } catch (e) {
+      console.error(e);
+      alert("Retry failed.");
+    } finally {
+      setRetrying(false);
     }
   }
 
+  const statusParts: string[] = [];
+  if (file.extraction_status) statusParts.push(String(file.extraction_status));
+  if (file.extracted_len != null) statusParts.push(`${file.extracted_len} chars`);
+  if (file.extraction_error) statusParts.push(`Error: ${file.extraction_error}`);
+  const statusLine = statusParts.length > 0 ? statusParts.join(" · ") : null;
+
   return (
+    <>
     <div
       style={{
         border: "1px solid rgba(0,0,0,0.1)",
@@ -41,19 +108,22 @@ function FileItem({ file, getDownloadUrl }: { file: SubmissionFileRow; getDownlo
         padding: 12,
         display: "flex",
         justifyContent: "space-between",
-        alignItems: "center",
+        alignItems: "flex-start",
         gap: 16,
       }}
     >
-      <div style={{ flex: 1 }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontWeight: 600, marginBottom: 4, fontSize: 14 }}>
-          {file.original_filename}
+          {title}
         </div>
-        {file.doc_type && (
+        {showSubline && (
+          <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 6 }}>{file.original_filename}</div>
+        )}
+        {file.category && (
           <span
             style={{
               display: "inline-block",
-              marginBottom: 4,
+              marginBottom: 6,
               padding: "2px 8px",
               borderRadius: 6,
               fontSize: 12,
@@ -62,37 +132,132 @@ function FileItem({ file, getDownloadUrl }: { file: SubmissionFileRow; getDownlo
               color: "#374151",
             }}
           >
-            {file.doc_type.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
-            {typeof file.doc_type_confidence === "number" && ` · ${Math.round(file.doc_type_confidence * 100)}%`}
+            {formatCategory(file.category)}
           </span>
         )}
-        {file.doc_type_ran_at && (
-          <div style={{ fontSize: 12, opacity: 0.6 }}>
-            Classified: {new Date(file.doc_type_ran_at).toLocaleString()}
-          </div>
+        {statusLine && (
+          <div style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>{statusLine}</div>
         )}
         {file.created_at && (
-          <div style={{ fontSize: 12, opacity: 0.6 }}>
+          <div style={{ fontSize: 12, opacity: 0.6, marginTop: 4 }}>
             Uploaded: {new Date(file.created_at).toLocaleString()}
           </div>
         )}
       </div>
-      <button
-        onClick={handleDownload}
-        disabled={loadingUrl}
-        style={{
-          padding: "6px 12px",
-          borderRadius: 8,
-          border: "1px solid rgba(0,0,0,0.2)",
-          cursor: loadingUrl ? "not-allowed" : "pointer",
-          fontWeight: 600,
-          fontSize: 13,
-          opacity: loadingUrl ? 0.6 : 1,
-        }}
-      >
-        {loadingUrl ? "Loading..." : "Download"}
-      </button>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, flexShrink: 0 }}>
+        <button
+          type="button"
+          onClick={handlePreview}
+          disabled={loadingUrl}
+          style={{ padding: "6px 10px", fontSize: 12, fontWeight: 600, borderRadius: 6, border: "1px solid #6b7280", background: "white", cursor: loadingUrl ? "not-allowed" : "pointer", opacity: loadingUrl ? 0.6 : 1 }}
+        >
+          {loadingUrl ? "…" : "Preview"}
+        </button>
+        <button
+          type="button"
+          onClick={handleRetryExtract}
+          disabled={retrying || !file.id}
+          style={{ padding: "6px 10px", fontSize: 12, fontWeight: 600, borderRadius: 6, border: "1px solid #4f46e5", background: "#eef2ff", color: "#4f46e5", cursor: retrying || !file.id ? "not-allowed" : "pointer", opacity: retrying || !file.id ? 0.6 : 1 }}
+        >
+          {retrying ? "Retrying…" : "Retry extract"}
+        </button>
+        <button
+          type="button"
+          onClick={handleDownload}
+          disabled={loadingUrl}
+          style={{ padding: "6px 10px", fontSize: 12, fontWeight: 600, borderRadius: 6, border: "1px solid #059669", background: "#ecfdf5", color: "#047857", cursor: loadingUrl ? "not-allowed" : "pointer", opacity: loadingUrl ? 0.6 : 1 }}
+        >
+          Download
+        </button>
+        <button
+          type="button"
+          onClick={() => onRequestDelete(file)}
+          style={{ padding: "6px 10px", fontSize: 12, fontWeight: 600, borderRadius: 6, border: "1px solid #b91c1c", background: "#fef2f2", color: "#b91c1c", cursor: "pointer" }}
+        >
+          Delete
+        </button>
+      </div>
     </div>
+
+    {showPreviewModal && (
+      <div
+        style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999 }}
+        onClick={() => setShowPreviewModal(false)}
+      >
+        <div
+          style={{ background: "white", borderRadius: 10, padding: 20, maxWidth: 640, width: "90%", maxHeight: "85vh", display: "flex", flexDirection: "column", boxShadow: "0 4px 20px rgba(0,0,0,0.15)" }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>{file.display_name ?? file.original_filename ?? "File"}</div>
+          {file.original_filename && (file.display_name !== file.original_filename || !file.display_name) && (
+            <div style={{ fontSize: 13, color: "#6b7280", marginBottom: 8 }}>{file.original_filename}</div>
+          )}
+          {file.category && (
+            <span style={{ display: "inline-block", marginBottom: 8, padding: "2px 8px", borderRadius: 6, fontSize: 12, fontWeight: 500, background: "#e5e7eb", color: "#374151" }}>
+              {formatCategory(file.category)}
+            </span>
+          )}
+          <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 12 }}>
+            {file.extraction_status && <span>{file.extraction_status}</span>}
+            {file.extracted_at && <span> · Extracted: {new Date(file.extracted_at).toLocaleString()}</span>}
+          </div>
+          {file.extraction_error && (
+            <div style={{ fontSize: 13, color: "#b91c1c", marginBottom: 12, padding: 8, background: "#fef2f2", borderRadius: 6 }}>{file.extraction_error}</div>
+          )}
+          <pre
+            style={{
+              flex: 1,
+              minHeight: 200,
+              maxHeight: 360,
+              overflow: "auto",
+              margin: "0 0 16px 0",
+              padding: 12,
+              fontSize: 12,
+              background: "#f9fafb",
+              border: "1px solid #e5e7eb",
+              borderRadius: 8,
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
+            }}
+          >
+            {file.extracted_text?.trim() ? file.extracted_text : "No extracted text yet."}
+          </pre>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            <button
+              type="button"
+              onClick={() => navigator.clipboard.writeText(file.extracted_text || "").then(() => alert("Copied to clipboard"))}
+              style={{ padding: "8px 14px", fontSize: 13, fontWeight: 600, borderRadius: 8, border: "1px solid #6b7280", background: "white", cursor: "pointer" }}
+            >
+              Copy text
+            </button>
+            <button
+              type="button"
+              onClick={() => { handleRetryExtract(); }}
+              disabled={retrying || !file.id}
+              style={{ padding: "8px 14px", fontSize: 13, fontWeight: 600, borderRadius: 8, border: "1px solid #4f46e5", background: "#eef2ff", color: "#4f46e5", cursor: retrying || !file.id ? "not-allowed" : "pointer", opacity: retrying || !file.id ? 0.6 : 1 }}
+            >
+              {retrying ? "Retrying…" : "Retry extract"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowPreviewModal(false)}
+              style={{ padding: "8px 14px", fontSize: 13, fontWeight: 600, borderRadius: 8, border: "1px solid #6b7280", background: "white", cursor: "pointer" }}
+            >
+              Close
+            </button>
+            <button
+              type="button"
+              onClick={handleOpenPdf}
+              disabled={loadingUrl}
+              style={{ padding: "8px 14px", fontSize: 13, fontWeight: 600, borderRadius: 8, border: "1px solid #059669", background: "#ecfdf5", color: "#047857", cursor: loadingUrl ? "not-allowed" : "pointer", opacity: loadingUrl ? 0.6 : 1 }}
+            >
+              {loadingUrl ? "…" : "Open PDF"}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+  </>
   );
 }
 
@@ -129,7 +294,8 @@ export default function SubmissionPage() {
   const [runNowError, setRunNowError] = useState<string | null>(null);
   const [findingActionLoadingId, setFindingActionLoadingId] = useState<string | null>(null);
   const [findingActionError, setFindingActionError] = useState<string | null>(null);
-  const [findingsFilter, setFindingsFilter] = useState<"open" | "acknowledged" | "resolved" | "all">("open");
+  const [fileToDelete, setFileToDelete] = useState<SubmissionFileRow | null>(null);
+  const [deleteInProgress, setDeleteInProgress] = useState(false);
 
   useEffect(() => {
     async function loadSubmission() {
@@ -162,36 +328,28 @@ export default function SubmissionPage() {
     }
   }, [submissionId]);
 
-  useEffect(() => {
-    async function loadFiles() {
-      if (!submissionId) return;
-
-      const supabase = supabaseBrowser();
-
-      const { data, error: fetchError } = await supabase
-        .from("submission_files")
-        .select("*")
-        .eq("submission_id", submissionId)
-        .order("created_at", { ascending: false });
-
-      if (fetchError) {
-        console.error("Error loading files:", {
-          message: fetchError.message,
-          details: fetchError.details,
-          hint: fetchError.hint,
-          code: fetchError.code,
-        });
-        setFilesError(fetchError.message);
-        setFilesLoading(false);
-        return;
-      }
-
+  async function refreshFiles() {
+    if (!submissionId) return;
+    const supabase = supabaseBrowser();
+    setFilesLoading(true);
+    const { data, error: fetchError } = await supabase
+      .from("submission_files")
+      .select("id, storage_path, original_filename, created_at, display_name, category, mime_type, size_bytes, extraction_status, extraction_error, extracted_at, extracted_text, doc_type, doc_type_confidence, doc_type_ran_at")
+      .eq("submission_id", submissionId)
+      .order("created_at", { ascending: false });
+    if (fetchError) {
+      console.error("Error loading files:", { message: fetchError.message, details: fetchError.details, hint: fetchError.hint, code: fetchError.code });
+      setFilesError(fetchError.message);
+    } else {
+      setFilesError(null);
       setFiles(data || []);
-      setFilesLoading(false);
     }
+    setFilesLoading(false);
+  }
 
+  useEffect(() => {
     if (submissionId && !loading) {
-      loadFiles();
+      refreshFiles();
     }
   }, [submissionId, loading]);
 
@@ -330,7 +488,7 @@ export default function SubmissionPage() {
         return;
       }
 
-      const validCategories = ["financials", "forecasts", "business_plan", "broker_app", "security", "other"];
+      const validCategories = ["financials", "tax", "forecasts", "business_plan", "broker_app", "security", "other"];
       const safeCategory = validCategories.includes(meta.category) ? meta.category : "other";
       const displayName = (meta.display_name || "").trim() || file.name;
 
@@ -415,6 +573,26 @@ export default function SubmissionPage() {
     setUploadCategory("other");
   }
 
+  async function handleRunAssessment() {
+    if (!submissionId || runNowLoading) return;
+    setRunNowLoading(true);
+    setRunNowError(null);
+    try {
+      const res = await fetch(`/api/submissions/${submissionId}/run`, { method: "POST", credentials: "include" });
+      const json = await res.json().catch(() => ({}));
+      if (res.ok && json?.ok) {
+        await loadLatestRun();
+      } else {
+        setRunNowError(json?.error ?? "Failed to run assessment");
+      }
+    } catch (err) {
+      console.error("Run assessment failed:", err);
+      setRunNowError(err instanceof Error ? err.message : "Failed to run assessment");
+    } finally {
+      setRunNowLoading(false);
+    }
+  }
+
   async function getDownloadUrl(storagePath: string): Promise<string | null> {
     const supabase = supabaseBrowser();
     const bucketName = "deal-packs";
@@ -435,6 +613,30 @@ export default function SubmissionPage() {
     }
 
     return data?.signedUrl || null;
+  }
+
+  async function handleConfirmDeleteFile() {
+    if (!fileToDelete?.id) return;
+    setDeleteInProgress(true);
+    const supabase = supabaseBrowser();
+    const bucket = (fileToDelete as { storage_bucket?: string }).storage_bucket ?? "deal-packs";
+    if (fileToDelete.storage_path) {
+      const { error: storageError } = await supabase.storage.from(bucket).remove([fileToDelete.storage_path]);
+      if (storageError) {
+        console.error("Storage delete error:", storageError);
+        alert("Failed to delete file from storage.");
+        setDeleteInProgress(false);
+        return;
+      }
+    }
+    const { error: dbError } = await supabase.from("submission_files").delete().eq("id", fileToDelete.id);
+    if (dbError) {
+      console.error("DB delete error:", dbError);
+      alert("File removed from storage but record delete failed.");
+    }
+    refreshFiles();
+    setFileToDelete(null);
+    setDeleteInProgress(false);
   }
 
   if (loading) {
@@ -604,11 +806,19 @@ export default function SubmissionPage() {
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             {files.map((file) => (
-              <FileItem key={file.id} file={file} getDownloadUrl={getDownloadUrl} />
+              <FileItem key={file.id} file={file} getDownloadUrl={getDownloadUrl} onRefresh={refreshFiles} onRequestDelete={setFileToDelete} />
             ))}
           </div>
         )}
       </div>
+
+      <DeleteFileDialog
+        open={fileToDelete != null}
+        onOpenChange={(open) => !open && setFileToDelete(null)}
+        fileName={fileToDelete ? (fileToDelete.display_name ?? fileToDelete.original_filename ?? "File") : ""}
+        onConfirm={handleConfirmDeleteFile}
+        isDeleting={deleteInProgress}
+      />
 
       {/* Upload File Modal */}
       {isUploadModalOpen && (
@@ -663,6 +873,7 @@ export default function SubmissionPage() {
                   }}
                 >
                   <option value="financials">Financials</option>
+                  <option value="tax">Tax</option>
                   <option value="forecasts">Forecasts</option>
                   <option value="business_plan">Business Plan</option>
                   <option value="broker_app">Broker Application/SoP</option>
@@ -712,246 +923,18 @@ export default function SubmissionPage() {
         </div>
       )}
 
-      {/* Assessment (latest run + findings) */}
-      <div
-        style={{
-          border: "1px solid rgba(0,0,0,0.2)",
-          borderRadius: 10,
-          padding: 20,
-          background: "white",
-          marginBottom: 24,
-        }}
-      >
-        <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 16 }}>
-          Assessment
-        </h2>
-        {runNowLoading && (
-          <p style={{ fontSize: 14, opacity: 0.6, marginBottom: 12 }}>Running assessment…</p>
-        )}
-        {runNowError && (
-          <div style={{ fontSize: 14, color: "crimson", marginBottom: 12, padding: 10, borderRadius: 8, background: "#fef2f2", border: "1px solid #fecaca" }}>Error: {runNowError}</div>
-        )}
-        {latestRunLoading ? (
-          <p style={{ fontSize: 14, opacity: 0.6 }}>Loading run…</p>
-        ) : !latestRun ? (
-          <>
-            <p style={{ fontSize: 14, opacity: 0.6, marginBottom: 12 }}>No runs yet.</p>
-            <p style={{ fontSize: 13, opacity: 0.7 }}>
-              Run assessment from the deal page (Upload Pack section) to see status, score, and findings here.
-            </p>
-            {submission?.deal_id && (
-              <button
-                type="button"
-                onClick={() => router.push(`/app/deals/${submission.deal_id}`)}
-                style={{
-                  marginTop: 12,
-                  padding: "8px 14px",
-                  borderRadius: 8,
-                  border: "1px solid rgba(0,0,0,0.2)",
-                  cursor: "pointer",
-                  fontWeight: 600,
-                  fontSize: 14,
-                }}
-              >
-                Go to deal
-              </button>
-            )}
-          </>
-        ) : (
-          <>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginBottom: 16, fontSize: 14 }}>
-              {typeof latestRun.score === "number" && (
-                <span><strong>Score:</strong> {latestRun.score}</span>
-              )}
-              {latestRun.assessment_status && (
-                <span><strong>Status:</strong> {String(latestRun.assessment_status).replace(/_/g, " ")}</span>
-              )}
-              {latestRun.assessed_at && (
-                <span><strong>Assessed:</strong> {new Date(latestRun.assessed_at).toLocaleString()}</span>
-              )}
-            </div>
-            {Array.isArray(latestRun.top_fixes) && latestRun.top_fixes.length > 0 && (
-              <div style={{ marginBottom: 16 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, color: "#374151" }}>Top fixes</div>
-                <ul style={{ margin: 0, paddingLeft: 20, fontSize: 13, color: "#4b5563" }}>
-                  {latestRun.top_fixes.map((fix, i) => (
-                    <li key={i} style={{ marginBottom: 4 }}>{fix}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, color: "#374151" }}>Findings</div>
-            {findingActionError && (
-              <div style={{ fontSize: 14, color: "crimson", marginBottom: 12, padding: 10, borderRadius: 8, background: "#fef2f2", border: "1px solid #fecaca" }}>Error: {findingActionError}</div>
-            )}
-            {(() => {
-              const openCount = latestFindings.filter((f) => f.workflow_state === "open").length;
-              const ackCount = latestFindings.filter((f) => f.workflow_state === "acknowledged").length;
-              const resolvedCount = latestFindings.filter((f) => f.workflow_state === "resolved").length;
-              const totalCount = latestFindings.length;
-              const filteredFindings = findingsFilter === "all" ? latestFindings : latestFindings.filter((f) => f.workflow_state === findingsFilter);
-              return (
-                <>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
-                    {[
-                      { key: "open" as const, label: "Open", count: openCount },
-                      { key: "acknowledged" as const, label: "Acknowledged", count: ackCount },
-                      { key: "resolved" as const, label: "Resolved", count: resolvedCount },
-                      { key: "all" as const, label: "All", count: totalCount },
-                    ].map(({ key, label, count }) => (
-                      <button
-                        key={key}
-                        type="button"
-                        onClick={() => setFindingsFilter(key)}
-                        style={{
-                          padding: "6px 12px",
-                          fontSize: 13,
-                          fontWeight: 600,
-                          borderRadius: 6,
-                          border: findingsFilter === key ? "1px solid #374151" : "1px solid #d1d5db",
-                          background: findingsFilter === key ? "#e5e7eb" : "white",
-                          color: findingsFilter === key ? "#111827" : "#4b5563",
-                          cursor: "pointer",
-                        }}
-                      >
-                        {label} ({count})
-                      </button>
-                    ))}
-                  </div>
-                  {latestFindings.length === 0 ? (
-                    <p style={{ fontSize: 14, opacity: 0.6 }}>No findings for latest run.</p>
-                  ) : filteredFindings.length === 0 ? (
-                    <p style={{ fontSize: 14, opacity: 0.6 }}>No findings in this state.</p>
-                  ) : (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                      {filteredFindings.map((f, i) => (
-                  <div
-                    key={f.id ?? i}
-                    style={{
-                      padding: 12,
-                      borderRadius: 8,
-                      border: "1px solid #e5e7eb",
-                      background: "#f9fafb",
-                      fontSize: 13,
-                    }}
-                  >
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
-                      {f.severity && (
-                        <span
-                          style={{
-                            padding: "2px 6px",
-                            borderRadius: 4,
-                            fontSize: 11,
-                            fontWeight: 600,
-                            textTransform: "capitalize",
-                            background: f.severity === "critical" ? "#fee2e2" : f.severity === "warning" ? "#fef3c7" : "#e0e7ff",
-                            color: f.severity === "critical" ? "#991b1b" : f.severity === "warning" ? "#92400e" : "#3730a3",
-                          }}
-                        >
-                          {f.severity}
-                        </span>
-                      )}
-                      {f.workflow_state && (
-                        <span style={{ fontSize: 11, opacity: 0.8 }}>{String(f.workflow_state).replace(/_/g, " ")}</span>
-                      )}
-                      {f.title && <span style={{ fontWeight: 600, color: "#374151" }}>{f.title}</span>}
-                      {f.id != null && (
-                        <span style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-                          <button
-                            type="button"
-                            disabled={findingActionLoadingId === f.id || f.workflow_state !== "open"}
-                            onClick={() => updateFindingWorkflowState(f.id!, "acknowledged")}
-                            style={{
-                              padding: "4px 10px",
-                              fontSize: 12,
-                              fontWeight: 600,
-                              borderRadius: 6,
-                              border: "1px solid #6b7280",
-                              background: "white",
-                              cursor: findingActionLoadingId === f.id || f.workflow_state !== "open" ? "not-allowed" : "pointer",
-                              opacity: findingActionLoadingId === f.id || f.workflow_state !== "open" ? 0.6 : 1,
-                            }}
-                          >
-                            {findingActionLoadingId === f.id ? "Saving…" : "Acknowledge"}
-                          </button>
-                          <button
-                            type="button"
-                            disabled={findingActionLoadingId === f.id || f.workflow_state === "resolved"}
-                            onClick={() => updateFindingWorkflowState(f.id!, "resolved")}
-                            style={{
-                              padding: "4px 10px",
-                              fontSize: 12,
-                              fontWeight: 600,
-                              borderRadius: 6,
-                              border: "1px solid #059669",
-                              background: "#ecfdf5",
-                              color: "#047857",
-                              cursor: findingActionLoadingId === f.id || f.workflow_state === "resolved" ? "not-allowed" : "pointer",
-                              opacity: findingActionLoadingId === f.id || f.workflow_state === "resolved" ? 0.6 : 1,
-                            }}
-                          >
-                            {findingActionLoadingId === f.id ? "Saving…" : "Resolve"}
-                          </button>
-                        </span>
-                      )}
-                    </div>
-                    {f.category && <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>{f.category}</div>}
-                    {f.message && <p style={{ margin: "0 0 6px 0", color: "#4b5563" }}>{f.message}</p>}
-                    {f.fix && <p style={{ margin: 0, fontSize: 12, color: "#6b7280" }}><strong>Fix:</strong> {f.fix}</p>}
-                    {(f.score_impact != null || f.created_at) && (
-                      <div style={{ marginTop: 6, fontSize: 11, opacity: 0.6 }}>
-                        {f.score_impact != null && `Impact: ${f.score_impact}`}
-                        {f.score_impact != null && f.created_at && " · "}
-                        {f.created_at && `Created: ${new Date(f.created_at).toLocaleString()}`}
-                      </div>
-                    )}
-                  </div>
-                ))}
-                    </div>
-                  )}
-                </>
-              );
-            })()}
-          </>
-        )}
-        <button
-          type="button"
-          onClick={async () => {
-            if (!submissionId || runNowLoading) return;
-            setRunNowLoading(true);
-            setRunNowError(null);
-            try {
-              const res = await fetch(`/api/submissions/${submissionId}/run`, { method: "POST", credentials: "include" });
-              const json = await res.json().catch(() => ({}));
-              if (res.ok && json?.ok) {
-                await loadLatestRun();
-              } else {
-                setRunNowError(json?.error ?? "Failed to run assessment");
-              }
-            } catch (err) {
-              console.error("Run assessment failed:", err);
-              setRunNowError(err instanceof Error ? err.message : "Failed to run assessment");
-            } finally {
-              setRunNowLoading(false);
-            }
-          }}
-          disabled={runNowLoading}
-          style={{
-            marginTop: 20,
-            padding: "8px 16px",
-            fontSize: 14,
-            fontWeight: 600,
-            borderRadius: 8,
-            border: "1px solid #4f46e5",
-            background: runNowLoading ? "#c7d2fe" : "#4f46e5",
-            color: "white",
-            cursor: runNowLoading ? "not-allowed" : "pointer",
-            opacity: runNowLoading ? 0.8 : 1,
-          }}
-        >
-          {runNowLoading ? "Running…" : "Run assessment"}
-        </button>
-      </div>
+      <AssessmentCard
+        findings={latestFindings}
+        run={latestRun}
+        runLoading={latestRunLoading}
+        runError={null}
+        runNowLoading={runNowLoading}
+        runNowError={runNowError}
+        findingActionError={findingActionError}
+        findingActionLoadingId={findingActionLoadingId}
+        onRunAssessment={handleRunAssessment}
+        onUpdateWorkflowState={updateFindingWorkflowState}
+      />
     </main>
   );
 }

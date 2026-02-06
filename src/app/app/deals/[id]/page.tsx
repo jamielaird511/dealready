@@ -1117,7 +1117,7 @@ export default function DealPage() {
       }
 
       // Validate category is one of the allowed values
-      const validCategories = ["financials", "forecasts", "business_plan", "broker_app", "security", "other"];
+      const validCategories = ["financials", "tax", "forecasts", "business_plan", "broker_app", "security", "other"];
       const safeCategory = validCategories.includes(category) ? category : "other";
 
       const insertData = {
@@ -2198,14 +2198,25 @@ export default function DealPage() {
                 )}
               </div>
 
-              <div className="flex gap-3">
-
-                <button
-                  onClick={() => router.push(`/app/deals/${dealId}/runs/${latestRun.id}`)}
-                  className="px-4 py-2 text-base font-semibold rounded-lg border border-green-700 bg-green-600 text-white cursor-pointer hover:bg-green-700"
-                >
-                  View latest results
-                </button>
+              <div className="flex gap-3 flex-wrap items-center">
+                {activeSubmissionId ? (
+                  <button
+                    onClick={() => router.push(`/app/submissions/${activeSubmissionId}`)}
+                    className="px-4 py-2 text-base font-semibold rounded-lg border border-green-700 bg-green-600 text-white cursor-pointer hover:bg-green-700"
+                  >
+                    View latest results
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      disabled
+                      className="px-4 py-2 text-base font-semibold rounded-lg border border-gray-300 bg-gray-100 text-gray-400 cursor-not-allowed"
+                    >
+                      View latest results
+                    </button>
+                    <span className="text-sm text-gray-500">Run DealSense to generate results.</span>
+                  </>
+                )}
                 <button
                   onClick={() => {
                     if (!hasBorrower) {
@@ -2993,6 +3004,7 @@ export default function DealPage() {
                   }}
                 >
                   <option value="financials">Financials</option>
+                  <option value="tax">Tax</option>
                   <option value="forecasts">Forecasts</option>
                   <option value="business_plan">Business Plan</option>
                   <option value="broker_app">Broker Application/SoP</option>
