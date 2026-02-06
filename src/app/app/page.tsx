@@ -15,6 +15,7 @@ export default function AppHome() {
 
     try {
       const { data: { user }, error: userError } = await supabase.auth.getUser();
+      console.log("[app] auth user id:", user?.id);
       if (userError || !user) {
         router.replace("/login");
         setCreating(false);

@@ -337,18 +337,25 @@ const SEVERITY_ORDER: Record<FindingRow["severity"], number> = {
   info: 2,
 };
 
-function computeSummary(findings: FindingRow[]): { score: number; assessment_status: string; top_fixes: string[] } {
+function computeSummary(
+  findings: FindingRow[],
+  workflowStateByFindingId?: Map<string, string>
+): { score: number; assessment_status: string; top_fixes: string[] } {
+  const active = workflowStateByFindingId
+    ? findings.filter((f) => workflowStateByFindingId.get(f.finding_id) !== "resolved")
+    : findings;
+
   let score = 100;
-  for (const f of findings) {
+  for (const f of active) {
     score -= f.score_impact;
   }
   score = Math.max(0, score);
 
   let assessment_status = "ready";
-  if (findings.some((f) => f.severity === "critical")) assessment_status = "needs_review";
-  else if (findings.some((f) => f.severity === "warning")) assessment_status = "minor_issues";
+  if (active.some((f) => f.severity === "critical")) assessment_status = "needs_review";
+  else if (active.some((f) => f.severity === "warning")) assessment_status = "minor_issues";
 
-  const sorted = [...findings].sort((a, b) => {
+  const sorted = [...active].sort((a, b) => {
     const sev = SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity];
     if (sev !== 0) return sev;
     return b.score_impact - a.score_impact;
@@ -452,12 +459,14 @@ export async function POST(
       workflow_state?: string | null;
       acknowledged_at?: string | null;
       resolved_at?: string | null;
+      title?: string | null;
+      fix?: string | null;
     }>();
 
     if (prevRun?.id) {
       const { data: prevFindings } = await supabase
         .from("submission_run_findings")
-        .select("finding_id, workflow_state, acknowledged_at, resolved_at")
+        .select("finding_id, workflow_state, acknowledged_at, resolved_at, title, fix")
         .eq("run_id", prevRun.id);
 
       for (const f of prevFindings ?? []) {
@@ -465,6 +474,8 @@ export async function POST(
           workflow_state: f.workflow_state,
           acknowledged_at: f.acknowledged_at,
           resolved_at: f.resolved_at,
+          title: f.title,
+          fix: f.fix,
         });
       }
     }
@@ -500,6 +511,27 @@ export async function POST(
     }
 
     const findings = generateFindings(submissionId, files);
+    const currentFindingIds = new Set(findings.map((f) => f.finding_id));
+    const syntheticFindingIds = new Set<string>();
+
+    for (const [findingId, prev] of prevFindingsByKey) {
+      if (currentFindingIds.has(findingId)) continue;
+      const prevTitle = prev?.title ?? null;
+      const prevFix = prev?.fix ?? null;
+      findings.push({
+        run_id: "",
+        severity: "info",
+        category: "documents",
+        finding_id: findingId,
+        title: (typeof prevTitle === "string" && prevTitle.trim() ? prevTitle : "Resolved item") as string,
+        message: "Resolved in latest run (requirement no longer detected as missing).",
+        fix: (typeof prevFix === "string" ? prevFix : "") as string,
+        score_impact: 0,
+        evidence: null,
+        status: "auto_resolved",
+      });
+      syntheticFindingIds.add(findingId);
+    }
 
     const { error: deleteFindingsError } = await supabase
       .from("submission_run_findings")
@@ -512,8 +544,29 @@ export async function POST(
       return NextResponse.json({ error: "Failed to clear findings for run" }, { status: 500 });
     }
 
+    const now = new Date().toISOString();
     const findingsToInsert = findings.map((f) => {
       const prev = prevFindingsByKey.get(f.finding_id);
+      const isSyntheticAutoResolved = syntheticFindingIds.has(f.finding_id);
+
+      if (isSyntheticAutoResolved) {
+        return {
+          run_id: runId,
+          severity: f.severity,
+          category: f.category,
+          message: f.message,
+          finding_id: f.finding_id,
+          title: f.title,
+          fix: f.fix,
+          score_impact: f.score_impact,
+          evidence: f.evidence,
+          status: "new",
+          workflow_state: "resolved",
+          resolved_at: now,
+          acknowledged_at: prev?.acknowledged_at ?? null,
+          state_changed_at: now,
+        };
+      }
 
       return {
         run_id: runId,
@@ -525,13 +578,11 @@ export async function POST(
         fix: f.fix,
         score_impact: f.score_impact,
         evidence: f.evidence,
-        status: f.status,
-
-        // carry over state if this finding existed before
+        status: "new",
         workflow_state: prev?.workflow_state ?? "open",
         acknowledged_at: prev?.acknowledged_at ?? null,
         resolved_at: prev?.resolved_at ?? null,
-        state_changed_at: new Date().toISOString(),
+        state_changed_at: now,
       };
     });
 
@@ -541,13 +592,14 @@ export async function POST(
         .insert(findingsToInsert);
 
       if (insertFindingsError) {
-        console.error("[submissions/run] Error inserting findings:", insertFindingsError);
+        console.error("insert findings failed", { submissionId, error: insertFindingsError });
         await supabase.from("submission_runs").update({ status: "failed" }).eq("id", runId);
-        return NextResponse.json({ error: "Failed to insert findings" }, { status: 500 });
+        return NextResponse.json({ ok: false, error: "Failed to insert findings", details: insertFindingsError }, { status: 500 });
       }
     }
 
-    const { score, assessment_status, top_fixes } = computeSummary(findings);
+    const workflowStateByFindingId = new Map<string, string>(findingsToInsert.map((p) => [p.finding_id, p.workflow_state ?? "open"]));
+    const { score, assessment_status, top_fixes } = computeSummary(findings, workflowStateByFindingId);
 
     const { error: updateError } = await supabase
       .from("submission_runs")

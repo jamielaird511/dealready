@@ -108,11 +108,28 @@ export default function SubmissionPage() {
   const [filesLoading, setFilesLoading] = useState(true);
   const [filesError, setFilesError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [uploadDisplayName, setUploadDisplayName] = useState("");
+  const [uploadCategory, setUploadCategory] = useState("other");
   const [latestRun, setLatestRun] = useState<RunRow | null>(null);
+
+  // Prevent background scroll while upload modal is open
+  useEffect(() => {
+    if (!isUploadModalOpen) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [isUploadModalOpen]);
   const [latestRunLoading, setLatestRunLoading] = useState(false);
   const [latestFindings, setLatestFindings] = useState<FindingRow[]>([]);
   const [runNowLoading, setRunNowLoading] = useState(false);
   const [runNowError, setRunNowError] = useState<string | null>(null);
+  const [findingActionLoadingId, setFindingActionLoadingId] = useState<string | null>(null);
+  const [findingActionError, setFindingActionError] = useState<string | null>(null);
+  const [findingsFilter, setFindingsFilter] = useState<"open" | "acknowledged" | "resolved" | "all">("open");
 
   useEffect(() => {
     async function loadSubmission() {
@@ -215,9 +232,65 @@ export default function SubmissionPage() {
     }
   }, [submissionId, loading]);
 
-  async function handleFileUpload(event: React.ChangeEvent<HTMLInputElement>) {
+  async function updateFindingWorkflowState(findingId: string, nextState: "open" | "acknowledged" | "resolved") {
+    setFindingActionError(null);
+    setFindingActionLoadingId(findingId);
+    const now = new Date().toISOString();
+    try {
+      const supabase = supabaseBrowser();
+      const payload: Record<string, unknown> = {
+        workflow_state: nextState,
+        state_changed_at: now,
+      };
+      if (nextState === "acknowledged" || nextState === "resolved") {
+        const { data: row, error: selectError } = await supabase
+          .from("submission_run_findings")
+          .select("acknowledged_at, resolved_at")
+          .eq("id", findingId)
+          .single();
+        if (selectError) {
+          console.error("[finding update] failed", { findingId, nextState, error: selectError });
+          setFindingActionError(selectError.message ?? "Update failed");
+          return;
+        }
+        if (nextState === "acknowledged") {
+          payload.acknowledged_at = row?.acknowledged_at ?? now;
+        }
+        if (nextState === "resolved") {
+          payload.resolved_at = row?.resolved_at ?? now;
+        }
+      }
+      const { error } = await supabase
+        .from("submission_run_findings")
+        .update(payload)
+        .eq("id", findingId);
+      if (error) {
+        console.error("[finding update] failed", { findingId, nextState, error });
+        setFindingActionError(error.message ?? "Update failed");
+        return;
+      }
+      console.log("[finding update] ok", { findingId, nextState });
+      await loadLatestRun();
+    } catch (err) {
+      setFindingActionError(err instanceof Error ? err.message : "Failed to update finding");
+    } finally {
+      setFindingActionLoadingId(null);
+    }
+  }
+
+  function handleFileSelect(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
-    if (!file || !submission || uploading) return;
+    if (!file) return;
+    setPendingFile(file);
+    const nameWithoutExt = file.name.replace(/\.[^.]+$/, "") || file.name;
+    setUploadDisplayName(nameWithoutExt);
+    setUploadCategory("other");
+    setIsUploadModalOpen(true);
+    event.target.value = "";
+  }
+
+  async function performUpload(file: File, meta: { display_name: string; category: string }) {
+    if (!submission || uploading) return;
 
     setUploading(true);
     setFilesError(null);
@@ -233,13 +306,10 @@ export default function SubmissionPage() {
     }
 
     try {
-
-      // Generate storage path: ${submissionId}/${timestamp}_${originalFilename}
       const timestamp = Date.now();
       const storagePath = `${submissionId}/${timestamp}_${file.name}`;
       const bucketName = "deal-packs";
 
-      // Upload file to storage
       const { error: uploadError } = await supabase.storage
         .from(bucketName)
         .upload(storagePath, file, {
@@ -260,11 +330,16 @@ export default function SubmissionPage() {
         return;
       }
 
-      // Insert file record into submission_files
+      const validCategories = ["financials", "forecasts", "business_plan", "broker_app", "security", "other"];
+      const safeCategory = validCategories.includes(meta.category) ? meta.category : "other";
+      const displayName = (meta.display_name || "").trim() || file.name;
+
       const insertData = {
         submission_id: submission.id,
         storage_path: storagePath,
         original_filename: file.name,
+        display_name: displayName,
+        category: safeCategory,
         mime_type: file.type,
         size_bytes: file.size
       };
@@ -277,25 +352,20 @@ export default function SubmissionPage() {
 
       if (insertError) {
         console.error("Error inserting file record:", insertError);
-        console.error("Insert error (stringified):", JSON.stringify(insertError, null, 2));
         console.error("Insert error details:", {
           message: insertError.message,
           details: insertError.details,
           hint: insertError.hint,
           code: insertError.code,
         });
-
-        // Check if it's an RLS error
-        const isRLSError = insertError.code === "42501" || 
-                          insertError.message?.toLowerCase().includes("permission denied") ||
-                          insertError.message?.toLowerCase().includes("row-level security");
-
+        const isRLSError = insertError.code === "42501" ||
+          insertError.message?.toLowerCase().includes("permission denied") ||
+          insertError.message?.toLowerCase().includes("row-level security");
         if (isRLSError) {
           alert("Permission denied. Please ensure RLS policies are configured for submission_files. See console for details.");
         } else {
           alert("Error saving file record. Please try again. See console for details.");
         }
-
         setUploading(false);
         return;
       }
@@ -308,7 +378,6 @@ export default function SubmissionPage() {
         }).catch(() => {});
       }
 
-      // Refresh files list
       const { data: refreshedFiles, error: refreshError } = await supabase
         .from("submission_files")
         .select("*")
@@ -321,13 +390,29 @@ export default function SubmissionPage() {
         setFiles(refreshedFiles || []);
       }
 
-      // Reset file input
-      event.target.value = "";
+      setIsUploadModalOpen(false);
+      setPendingFile(null);
+      setUploadDisplayName("");
+      setUploadCategory("other");
       setUploading(false);
     } catch (err) {
       console.error("Error:", err);
       setUploading(false);
     }
+  }
+
+  function handleUploadModalConfirm() {
+    if (!pendingFile || uploading || !uploadCategory) return;
+    const displayName = uploadDisplayName.trim() || pendingFile.name;
+    performUpload(pendingFile, { display_name: displayName, category: uploadCategory });
+  }
+
+  function handleUploadModalCancel() {
+    if (uploading) return;
+    setIsUploadModalOpen(false);
+    setPendingFile(null);
+    setUploadDisplayName("");
+    setUploadCategory("other");
   }
 
   async function getDownloadUrl(storagePath: string): Promise<string | null> {
@@ -498,7 +583,7 @@ export default function SubmissionPage() {
           >
             <input
               type="file"
-              onChange={handleFileUpload}
+              onChange={handleFileSelect}
               disabled={uploading}
               style={{ display: "none" }}
             />
@@ -524,6 +609,108 @@ export default function SubmissionPage() {
           </div>
         )}
       </div>
+
+      {/* Upload File Modal */}
+      {isUploadModalOpen && (
+        <div
+          className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50"
+          onClick={handleUploadModalCancel}
+        >
+          <div
+            className="w-full max-w-lg max-h-[85vh] overflow-auto rounded-xl bg-white p-6 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 style={{ fontSize: 20, fontWeight: 700, marginBottom: 20 }}>Upload File</h3>
+            {pendingFile && (
+              <p style={{ fontSize: 14, color: "#6b7280", marginBottom: 16 }}>File: {pendingFile.name}</p>
+            )}
+            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+              <div>
+                <label style={{ display: "block", fontSize: 14, fontWeight: 600, marginBottom: 8, color: "#374151" }}>
+                  Display name (required)
+                </label>
+                <input
+                  type="text"
+                  value={uploadDisplayName}
+                  onChange={(e) => setUploadDisplayName(e.target.value)}
+                  placeholder="Enter display name"
+                  style={{
+                    width: "100%",
+                    padding: "10px 12px",
+                    fontSize: 14,
+                    border: "1px solid rgba(0,0,0,0.2)",
+                    borderRadius: 8,
+                    outline: "none",
+                  }}
+                />
+              </div>
+              <div>
+                <label style={{ display: "block", fontSize: 14, fontWeight: 600, marginBottom: 8, color: "#374151" }}>
+                  Category (required)
+                </label>
+                <select
+                  value={uploadCategory}
+                  onChange={(e) => setUploadCategory(e.target.value)}
+                  disabled={uploading}
+                  style={{
+                    width: "100%",
+                    padding: "10px 12px",
+                    fontSize: 14,
+                    border: "1px solid rgba(0,0,0,0.2)",
+                    borderRadius: 8,
+                    outline: "none",
+                    background: "white",
+                  }}
+                >
+                  <option value="financials">Financials</option>
+                  <option value="forecasts">Forecasts</option>
+                  <option value="business_plan">Business Plan</option>
+                  <option value="broker_app">Broker Application/SoP</option>
+                  <option value="security">Security</option>
+                  <option value="other">Other</option>
+                </select>
+              </div>
+              <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", marginTop: 8 }}>
+                <button
+                  type="button"
+                  onClick={handleUploadModalCancel}
+                  disabled={uploading}
+                  style={{
+                    padding: "10px 20px",
+                    fontSize: 14,
+                    fontWeight: 600,
+                    borderRadius: 8,
+                    border: "1px solid rgba(0,0,0,0.2)",
+                    background: "white",
+                    cursor: uploading ? "not-allowed" : "pointer",
+                    opacity: uploading ? 0.6 : 1,
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleUploadModalConfirm}
+                  disabled={uploading || !pendingFile || !uploadCategory}
+                  style={{
+                    padding: "10px 20px",
+                    fontSize: 14,
+                    fontWeight: 600,
+                    borderRadius: 8,
+                    border: "1px solid #4f46e5",
+                    background: uploading || !pendingFile || !uploadCategory ? "#e5e7eb" : "#4f46e5",
+                    color: uploading || !pendingFile || !uploadCategory ? "#9ca3af" : "white",
+                    cursor: uploading || !pendingFile || !uploadCategory ? "not-allowed" : "pointer",
+                    opacity: uploading || !pendingFile || !uploadCategory ? 0.6 : 1,
+                  }}
+                >
+                  {uploading ? "Uploading..." : "Upload"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Assessment (latest run + findings) */}
       <div
@@ -594,11 +781,50 @@ export default function SubmissionPage() {
               </div>
             )}
             <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, color: "#374151" }}>Findings</div>
-            {latestFindings.length === 0 ? (
-              <p style={{ fontSize: 14, opacity: 0.6 }}>No findings for latest run.</p>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                {latestFindings.map((f, i) => (
+            {findingActionError && (
+              <div style={{ fontSize: 14, color: "crimson", marginBottom: 12, padding: 10, borderRadius: 8, background: "#fef2f2", border: "1px solid #fecaca" }}>Error: {findingActionError}</div>
+            )}
+            {(() => {
+              const openCount = latestFindings.filter((f) => f.workflow_state === "open").length;
+              const ackCount = latestFindings.filter((f) => f.workflow_state === "acknowledged").length;
+              const resolvedCount = latestFindings.filter((f) => f.workflow_state === "resolved").length;
+              const totalCount = latestFindings.length;
+              const filteredFindings = findingsFilter === "all" ? latestFindings : latestFindings.filter((f) => f.workflow_state === findingsFilter);
+              return (
+                <>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+                    {[
+                      { key: "open" as const, label: "Open", count: openCount },
+                      { key: "acknowledged" as const, label: "Acknowledged", count: ackCount },
+                      { key: "resolved" as const, label: "Resolved", count: resolvedCount },
+                      { key: "all" as const, label: "All", count: totalCount },
+                    ].map(({ key, label, count }) => (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => setFindingsFilter(key)}
+                        style={{
+                          padding: "6px 12px",
+                          fontSize: 13,
+                          fontWeight: 600,
+                          borderRadius: 6,
+                          border: findingsFilter === key ? "1px solid #374151" : "1px solid #d1d5db",
+                          background: findingsFilter === key ? "#e5e7eb" : "white",
+                          color: findingsFilter === key ? "#111827" : "#4b5563",
+                          cursor: "pointer",
+                        }}
+                      >
+                        {label} ({count})
+                      </button>
+                    ))}
+                  </div>
+                  {latestFindings.length === 0 ? (
+                    <p style={{ fontSize: 14, opacity: 0.6 }}>No findings for latest run.</p>
+                  ) : filteredFindings.length === 0 ? (
+                    <p style={{ fontSize: 14, opacity: 0.6 }}>No findings in this state.</p>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                      {filteredFindings.map((f, i) => (
                   <div
                     key={f.id ?? i}
                     style={{
@@ -609,7 +835,7 @@ export default function SubmissionPage() {
                       fontSize: 13,
                     }}
                   >
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
                       {f.severity && (
                         <span
                           style={{
@@ -629,6 +855,45 @@ export default function SubmissionPage() {
                         <span style={{ fontSize: 11, opacity: 0.8 }}>{String(f.workflow_state).replace(/_/g, " ")}</span>
                       )}
                       {f.title && <span style={{ fontWeight: 600, color: "#374151" }}>{f.title}</span>}
+                      {f.id != null && (
+                        <span style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+                          <button
+                            type="button"
+                            disabled={findingActionLoadingId === f.id || f.workflow_state !== "open"}
+                            onClick={() => updateFindingWorkflowState(f.id!, "acknowledged")}
+                            style={{
+                              padding: "4px 10px",
+                              fontSize: 12,
+                              fontWeight: 600,
+                              borderRadius: 6,
+                              border: "1px solid #6b7280",
+                              background: "white",
+                              cursor: findingActionLoadingId === f.id || f.workflow_state !== "open" ? "not-allowed" : "pointer",
+                              opacity: findingActionLoadingId === f.id || f.workflow_state !== "open" ? 0.6 : 1,
+                            }}
+                          >
+                            {findingActionLoadingId === f.id ? "Saving…" : "Acknowledge"}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={findingActionLoadingId === f.id || f.workflow_state === "resolved"}
+                            onClick={() => updateFindingWorkflowState(f.id!, "resolved")}
+                            style={{
+                              padding: "4px 10px",
+                              fontSize: 12,
+                              fontWeight: 600,
+                              borderRadius: 6,
+                              border: "1px solid #059669",
+                              background: "#ecfdf5",
+                              color: "#047857",
+                              cursor: findingActionLoadingId === f.id || f.workflow_state === "resolved" ? "not-allowed" : "pointer",
+                              opacity: findingActionLoadingId === f.id || f.workflow_state === "resolved" ? 0.6 : 1,
+                            }}
+                          >
+                            {findingActionLoadingId === f.id ? "Saving…" : "Resolve"}
+                          </button>
+                        </span>
+                      )}
                     </div>
                     {f.category && <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>{f.category}</div>}
                     {f.message && <p style={{ margin: "0 0 6px 0", color: "#4b5563" }}>{f.message}</p>}
@@ -642,8 +907,11 @@ export default function SubmissionPage() {
                     )}
                   </div>
                 ))}
-              </div>
-            )}
+                    </div>
+                  )}
+                </>
+              );
+            })()}
           </>
         )}
         <button
