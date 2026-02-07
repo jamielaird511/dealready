@@ -24,7 +24,7 @@ type DealPartyRaw = { id: string; deal_id?: string; roles?: string[]; role?: str
 type DealPartyRow = { id: string; roles?: string[]; role?: string | null };
 type DealPartyNormalized = { id: string; deal_id?: string; roles?: string[]; role?: string | null; notes?: string | null; entityId?: string | null; entity_type?: string | null; display_name?: string | null; email?: string | null; phone?: string | null; type?: string | null; name?: string | null };
 type RunRow = { id?: string; created_at?: string; status?: string; score?: number; assessment_status?: string; assessed_at?: string; top_fixes?: string[] };
-type FindingRow = { id?: string; severity?: string; status?: string; workflow_state?: string; title?: string; message?: string; fix?: string; score_impact?: number; resolved_at?: string };
+type FindingRow = { id?: string; severity?: string; status?: string; workflow_state?: string; title?: string; message?: string; fix?: string; score_impact?: number; resolved_at?: string; category?: string };
 type SupabaseErrorLike = { message?: string; details?: unknown; hint?: string; code?: string };
 
 function getErrorMessage(e: unknown, fallback: string): string {
@@ -32,7 +32,7 @@ function getErrorMessage(e: unknown, fallback: string): string {
   return typeof (e as { message?: unknown })?.message === "string" ? (e as { message: string }).message : fallback;
 }
 
-function FindingItem({ finding: f, onResolved, resolvedView }: { finding: FindingRow; onResolved?: (findingId: string) => Promise<void>; resolvedView?: boolean }) {
+function FindingItem({ finding: f, onResolved, resolvedView, showAiBadge }: { finding: FindingRow; onResolved?: (findingId: string) => Promise<void>; resolvedView?: boolean; showAiBadge?: boolean }) {
   const [resolving, setResolving] = useState(false);
   async function handleResolve(e: React.MouseEvent) {
     e.stopPropagation();
@@ -77,6 +77,21 @@ function FindingItem({ finding: f, onResolved, resolvedView }: { finding: Findin
         >
           {f.severity ?? "info"}
         </span>
+        {showAiBadge && (
+          <span
+            style={{
+              padding: "2px 6px",
+              borderRadius: 4,
+              fontSize: 10,
+              fontWeight: 600,
+              background: "#e0e7ff",
+              color: "#3730a3",
+              letterSpacing: "0.3px",
+            }}
+          >
+            AI
+          </span>
+        )}
         {resolvedView && (
           <span
             style={{
@@ -2754,6 +2769,19 @@ export default function DealPage() {
               const state = f.workflow_state ?? "";
               return status === "resolved" || state === "resolved";
             });
+            const severityOrder: Record<string, number> = { critical: 1, warning: 2, info: 3 };
+            const sortBySeverityThenTitle = (a: FindingRow, b: FindingRow) => {
+              const sa = severityOrder[a.severity ?? ""] ?? 4;
+              const sb = severityOrder[b.severity ?? ""] ?? 4;
+              if (sa !== sb) return sa - sb;
+              return (a.title ?? "").localeCompare(b.title ?? "");
+            };
+            const documentsActive = activeFindings.filter((f) => (f.category ?? "documents") === "documents").sort(sortBySeverityThenTitle);
+            const completenessActive = activeFindings.filter((f) => f.category === "completeness").sort(sortBySeverityThenTitle);
+            const documentsResolved = resolvedFindings.filter((f) => (f.category ?? "documents") === "documents").sort(sortBySeverityThenTitle);
+            const completenessResolved = resolvedFindings.filter((f) => f.category === "completeness").sort(sortBySeverityThenTitle);
+            const hasCompleteness = completenessActive.length > 0 || completenessResolved.length > 0;
+
             const activeCriticalCount = activeFindings.filter((f) => f.severity === "critical").length;
             const activeWarningCount = activeFindings.filter((f) => f.severity === "warning").length;
             const readiness =
@@ -2807,12 +2835,26 @@ export default function DealPage() {
                 )}
                 {activeFindings.length > 0 ? (
                   <div style={{ marginBottom: 16 }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, color: "#374151" }}>Active findings</div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                      {activeFindings.map((f, i) => (
-                        <FindingItem key={f.id ?? i} finding={f} onResolved={handleFindingResolved} />
-                      ))}
-                    </div>
+                    {documentsActive.length > 0 && (
+                      <>
+                        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, color: "#374151" }}>Documents missing</div>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                          {documentsActive.map((f, i) => (
+                            <FindingItem key={f.id ?? i} finding={f} onResolved={handleFindingResolved} />
+                          ))}
+                        </div>
+                      </>
+                    )}
+                    {hasCompleteness && completenessActive.length > 0 && (
+                      <>
+                        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, marginTop: documentsActive.length > 0 ? 16 : 0, color: "#374151" }}>Missing context (AI)</div>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                          {completenessActive.map((f, i) => (
+                            <FindingItem key={f.id ?? i} finding={f} onResolved={handleFindingResolved} showAiBadge />
+                          ))}
+                        </div>
+                      </>
+                    )}
                   </div>
                 ) : latestRun?.id ? (
                   <p style={{ fontSize: 14, color: "#6b7280", marginBottom: 12 }}>No findings.</p>
@@ -2823,9 +2865,22 @@ export default function DealPage() {
                       Resolved findings ({resolvedFindings.length})
                     </summary>
                     <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 8 }}>
-                      {resolvedFindings.map((f, i) => (
-                        <FindingItem key={f.id ?? i} finding={f} resolvedView />
-                      ))}
+                      {documentsResolved.length > 0 && (
+                        <>
+                          <div style={{ fontSize: 12, fontWeight: 600, color: "#6b7280", marginBottom: 4 }}>Documents missing</div>
+                          {documentsResolved.map((f, i) => (
+                            <FindingItem key={f.id ?? i} finding={f} resolvedView />
+                          ))}
+                        </>
+                      )}
+                      {hasCompleteness && completenessResolved.length > 0 && (
+                        <>
+                          <div style={{ fontSize: 12, fontWeight: 600, color: "#6b7280", marginBottom: 4, marginTop: documentsResolved.length > 0 ? 12 : 0 }}>Missing context (AI)</div>
+                          {completenessResolved.map((f, i) => (
+                            <FindingItem key={f.id ?? i} finding={f} resolvedView showAiBadge />
+                          ))}
+                        </>
+                      )}
                     </div>
                   </details>
                 )}

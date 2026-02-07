@@ -65,6 +65,10 @@ const ALLOWED_DOC_TYPES = [
 ] as const;
 const MAX_INPUT_LENGTH_CLASSIFY = 12_000;
 const CLASSIFY_MODEL = "gpt-4o-mini";
+const AI_COMPLETENESS_MAX_FINDINGS = 8;
+const AI_EXTRACT_PREVIEW_CHARS = 4000;
+const AI_COMPLETENESS_MODEL = "gpt-4o-mini";
+const AI_FINDING_ID_REGEX = /^ai_[a-z0-9_]+$/;
 
 async function classifyOneFile(
   supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
@@ -148,6 +152,113 @@ Allowed doc_type values (use exactly one): ${ALLOWED_DOC_TYPES.join(", ")}`;
     .eq("id", fileId);
 
   if (updateError) throw new Error(updateError.message);
+}
+
+function mapAiSeverityToDb(severity: string): "critical" | "warning" | "info" {
+  if (severity === "critical" || severity === "active") return "warning";
+  return "info";
+}
+
+async function generateAiCompletenessFindings(submissionId: string, files: FileRow[]): Promise<FindingRow[]> {
+  const filePreviews = files.map((f) => {
+    const text = (f.extracted_text ?? "").trim();
+    const hasText = text.length > 0;
+    return {
+      id: f.id ?? "",
+      display_name: f.display_name ?? f.original_filename ?? "Unknown",
+      has_extracted_text: hasText,
+      extracted_text: hasText ? text.slice(0, AI_EXTRACT_PREVIEW_CHARS) : "",
+    };
+  });
+  const contextBlock =
+    filePreviews.length > 0 ? JSON.stringify(filePreviews, null, 2) : "No files available.";
+  const submissionContext = JSON.stringify({ submission_id: submissionId });
+
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) return [];
+
+  const systemPrompt = `You are a Deal Pack Completeness Reviewer. Identify only MISSING INFORMATION or UNCLEAR CONTEXT. Do NOT assess credit quality, risk, or approval likelihood.
+
+Output only valid JSON, no markdown. Use this exact finding structure:
+{"findings": [{"finding_id": "<slug>", "title": "<short title>", "severity": "critical"|"active"|"info", "explanation": "<why this is a gap>", "fix": "<what to provide or clarify>", "evidence": []}]}
+Severity: "critical" = deal cannot proceed; "active" = likely lender follow-up; "info" = minor clarification.
+Use finding_id slugs like ai_missing_purpose, ai_missing_ownership_chart, ai_missing_loan_purpose, ai_missing_borrower_structure, ai_missing_security_details, ai_missing_use_of_funds, ai_missing_repayment_source, ai_incomplete_context, ai_missing_key_dates, ai_unclear_terms.
+Return at most ${AI_COMPLETENESS_MAX_FINDINGS} findings. If nothing clearly missing, return {"findings": []}.`;
+
+  const userPrompt = `Submission context: ${submissionContext}\n\nFile list and extracted text:\n${contextBlock}`;
+
+  let raw: string;
+  try {
+    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model: AI_COMPLETENESS_MODEL,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+        temperature: 0.2,
+        max_tokens: 2048,
+      }),
+    });
+    if (!res.ok) return [];
+    const data = (await res.json().catch(() => null)) as { choices?: Array<{ message?: { content?: string } }> } | null;
+    raw = data?.choices?.[0]?.message?.content?.trim() ?? "";
+    if (!raw) return [];
+  } catch {
+    return [];
+  }
+
+  let parsed: { findings?: unknown[] };
+  try {
+    const cleaned = raw.replace(/^[\s\S]*?(\{[\s\S]*\})[\s\S]*$/m, "$1").trim();
+    parsed = JSON.parse(cleaned) as { findings?: unknown[] };
+  } catch {
+    return [];
+  }
+
+  const arr = Array.isArray(parsed.findings) ? parsed.findings : [];
+  const out: FindingRow[] = [];
+  for (let i = 0; i < Math.min(arr.length, AI_COMPLETENESS_MAX_FINDINGS); i++) {
+    const f = arr[i];
+    if (!f || typeof f !== "object") continue;
+    const finding_id = typeof (f as { finding_id?: string }).finding_id === "string" ? (f as { finding_id: string }).finding_id.trim() : "";
+    if (!finding_id || !AI_FINDING_ID_REGEX.test(finding_id)) continue;
+    const title = typeof (f as { title?: string }).title === "string" ? (f as { title: string }).title.trim() : "";
+    if (!title) continue;
+    const severityRaw = (f as { severity?: string }).severity;
+    const severity = mapAiSeverityToDb(typeof severityRaw === "string" ? severityRaw : "info");
+    const explanation = typeof (f as { explanation?: string }).explanation === "string" ? (f as { explanation: string }).explanation : "";
+    const fix = typeof (f as { fix?: string }).fix === "string" ? (f as { fix: string }).fix : "";
+    let evidence: FindingRow["evidence"] = null;
+    const ev = (f as { evidence?: unknown }).evidence;
+    if (Array.isArray(ev)) {
+      const valid = ev
+        .filter((e): e is Record<string, unknown> => e != null && typeof e === "object")
+        .filter(
+          (e) =>
+            (e.source === "submission" || e.source === "file") &&
+            typeof e.id === "string" &&
+            typeof e.quote === "string"
+        )
+        .map((e) => ({ source: e.source, id: e.id, quote: e.quote }));
+      evidence = valid as FindingRow["evidence"];
+    }
+    out.push({
+      run_id: "",
+      finding_id,
+      title,
+      severity,
+      category: "completeness",
+      message: explanation || title,
+      fix: fix || "Review and provide clarification.",
+      score_impact: 0,
+      evidence: evidence ?? null,
+      status: "new",
+    });
+  }
+  return out;
 }
 
 function generateFindings(submissionId: string, files: FileRow[]): FindingRow[] {
@@ -540,6 +651,7 @@ export async function POST(
 
     for (const [findingId, prev] of prevFindingsByKey) {
       if (currentFindingIds.has(findingId)) continue;
+      if (findingId.startsWith("ai_")) continue;
       const prevTitle = prev?.title ?? null;
       const prevFix = prev?.fix ?? null;
       findings.push({
@@ -556,6 +668,15 @@ export async function POST(
       });
       syntheticFindingIds.add(findingId);
     }
+
+    let aiFindings: FindingRow[] = [];
+    try {
+      aiFindings = await generateAiCompletenessFindings(submissionId, files);
+      console.log("AI completeness findings:", aiFindings.length);
+    } catch (err) {
+      console.error("[submissions/run] AI completeness failed:", err instanceof Error ? err.message : err);
+    }
+    const findingsForSummary = [...findings, ...aiFindings];
 
     const { error: deleteFindingsError } = await supabase
       .from("submission_run_findings")
@@ -622,8 +743,36 @@ export async function POST(
       }
     }
 
-    const workflowStateByFindingId = new Map<string, string>(findingsToInsert.map((p) => [p.finding_id, p.workflow_state ?? "open"]));
-    const { score, assessment_status, top_fixes } = computeSummary(findings, workflowStateByFindingId);
+    if (aiFindings.length > 0) {
+      const aiRows = aiFindings.map((f) => ({
+        run_id: runId,
+        finding_id: f.finding_id,
+        title: f.title,
+        severity: f.severity,
+        category: "completeness" as const,
+        message: f.message,
+        fix: f.fix,
+        score_impact: 0,
+        evidence: Array.isArray(f.evidence) ? f.evidence : [],
+        status: "new",
+        workflow_state: "open",
+        acknowledged_at: null,
+        resolved_at: null,
+        state_changed_at: now,
+      }));
+      const { error: upsertAiError } = await supabase
+        .from("submission_run_findings")
+        .upsert(aiRows, { onConflict: "run_id,finding_id" });
+      if (upsertAiError) {
+        console.error("[submissions/run] AI findings upsert failed:", upsertAiError);
+      }
+    }
+
+    const workflowStateByFindingId = new Map<string, string>([
+      ...findingsToInsert.map((p): [string, string] => [p.finding_id, p.workflow_state ?? "open"]),
+      ...aiFindings.map((f): [string, string] => [f.finding_id, "open"]),
+    ]);
+    const { score, assessment_status, top_fixes } = computeSummary(findingsForSummary, workflowStateByFindingId);
 
     const { error: updateError } = await supabase
       .from("submission_runs")
