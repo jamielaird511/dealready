@@ -508,6 +508,14 @@ export default function DealPage() {
   const [latestRunError, setLatestRunError] = useState<string | null>(null);
   const [runAssessmentLoading, setRunAssessmentLoading] = useState(false);
 
+  // Lender summary state
+  const [summary, setSummary] = useState<string | null>(null);
+  const [summaryId, setSummaryId] = useState<string | null>(null);
+  const [loadingSummary, setLoadingSummary] = useState(false);
+  const [errorSummary, setErrorSummary] = useState<string | null>(null);
+  const [generatingSummary, setGeneratingSummary] = useState(false);
+  const [summaryCreatedAt, setSummaryCreatedAt] = useState<string | null>(null);
+
   async function loadFilesWithChunkCounts(submissionId: string): Promise<SubmissionFileRow[]> {
     const supabase = supabaseBrowser();
     const { data: filesData, error } = await supabase
@@ -742,6 +750,32 @@ export default function DealPage() {
       setExpandedCategories(categoriesWithFiles);
     }
   }, [files, filesLoading]);
+
+  // Fetch latest lender summary for deal
+  useEffect(() => {
+    if (!dealId) return;
+    let cancelled = false;
+    setLoadingSummary(true);
+    setErrorSummary(null);
+    fetch(`/api/deals/${dealId}/summary`)
+      .then((res) => {
+        if (!res.ok) throw new Error(res.status === 401 ? "Unauthorized" : "Failed to load summary");
+        return res.json();
+      })
+      .then((data) => {
+        if (cancelled) return;
+        setSummary(data.summary ?? null);
+        setSummaryId(data.summary_id ?? null);
+        setSummaryCreatedAt(data.created_at ?? null);
+      })
+      .catch((err) => {
+        if (!cancelled) setErrorSummary(err instanceof Error ? err.message : "Failed to load summary");
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingSummary(false);
+      });
+    return () => { cancelled = true; };
+  }, [dealId]);
 
   async function refreshLatestRun() {
     if (!activeSubmissionId) {
@@ -2924,6 +2958,102 @@ export default function DealPage() {
           >
             {runAssessmentLoading ? "Running…" : "Run assessment"}
           </button>
+        )}
+      </div>
+
+      {/* Lender Summary */}
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5" style={{ marginTop: 24 }}>
+        <h2 className="text-xl font-semibold mb-0 text-gray-900" style={{ marginBottom: 16 }}>Lender Summary</h2>
+        {loadingSummary ? (
+          <p style={{ fontSize: 14, color: "#6b7280" }}>Loading summary…</p>
+        ) : errorSummary ? (
+          <p style={{ fontSize: 14, color: "#b91c1c" }}>{errorSummary}</p>
+        ) : null}
+        {!loadingSummary && (
+          <>
+            <button
+              type="button"
+              onClick={async () => {
+                if (!dealId || generatingSummary) return;
+                setGeneratingSummary(true);
+                setErrorSummary(null);
+                try {
+                  const res = await fetch(`/api/deals/${dealId}/generate-summary`, { method: "POST" });
+                  const json = await res.json().catch(() => ({}));
+                  if (!res.ok) {
+                    setErrorSummary(json?.error ?? "Generate failed");
+                    return;
+                  }
+                  setSummary(json.summary ?? null);
+                  setSummaryId(json.summary_id ?? null);
+                  setSummaryCreatedAt(new Date().toISOString());
+                } catch (err) {
+                  setErrorSummary(err instanceof Error ? err.message : "Generate failed");
+                } finally {
+                  setGeneratingSummary(false);
+                }
+              }}
+              disabled={generatingSummary}
+              style={{
+                padding: "8px 16px",
+                fontSize: 14,
+                fontWeight: 600,
+                borderRadius: 8,
+                border: "1px solid #059669",
+                background: generatingSummary ? "#a7f3d0" : "#059669",
+                color: "white",
+                cursor: generatingSummary ? "not-allowed" : "pointer",
+                opacity: generatingSummary ? 0.8 : 1,
+                marginBottom: 16,
+              }}
+            >
+              {generatingSummary ? "Generating…" : "Generate Lender Summary"}
+            </button>
+            {summary && (
+              <div style={{ marginTop: 8 }}>
+                {summaryCreatedAt && (
+                  <p style={{ fontSize: 12, color: "#6b7280", marginBottom: 8 }}>
+                    Generated {new Date(summaryCreatedAt).toLocaleString()}
+                  </p>
+                )}
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 8, marginBottom: 8 }}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (summary) navigator.clipboard.writeText(summary).then(() => {}).catch(() => {});
+                    }}
+                    style={{
+                      padding: "6px 12px",
+                      fontSize: 13,
+                      fontWeight: 500,
+                      borderRadius: 6,
+                      border: "1px solid #d1d5db",
+                      background: "#f9fafb",
+                      color: "#374151",
+                      cursor: "pointer",
+                    }}
+                  >
+                    Copy
+                  </button>
+                </div>
+                <div
+                  className="whitespace-pre-wrap"
+                  style={{
+                    padding: 12,
+                    background: "#f9fafb",
+                    borderRadius: 8,
+                    border: "1px solid #e5e7eb",
+                    fontSize: 13,
+                    color: "#374151",
+                    maxHeight: 400,
+                    overflowY: "auto",
+                  }}
+                >
+                  {summary}
+                </div>
+              </div>
+            )}
+          </>
         )}
       </div>
 
