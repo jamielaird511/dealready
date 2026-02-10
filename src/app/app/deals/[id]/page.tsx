@@ -134,7 +134,30 @@ function FindingItem({ finding: f, onResolved, resolvedView, showAiBadge }: { fi
         </p>
       )}
       {f.message && <p style={{ margin: "0 0 6px 0", color: "#4b5563" }}>{f.message}</p>}
-      {f.fix && <p style={{ margin: 0, fontSize: 12, color: "#6b7280" }}><strong>Fix:</strong> {f.fix}</p>}
+      {f.fix && (f.fix as string).trim() && (
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8, marginTop: 8 }}>
+          <p style={{ margin: 0, fontSize: 12, color: "#6b7280", flex: 1 }}>
+            <strong style={{ fontWeight: 600 }}>Next step:</strong> {(f.fix as string).trim()}
+          </p>
+          <button
+            type="button"
+            onClick={() => navigator.clipboard.writeText((f.fix as string).trim()).catch(() => {})}
+            style={{
+              padding: "2px 8px",
+              fontSize: 11,
+              fontWeight: 500,
+              borderRadius: 4,
+              border: "1px solid #d1d5db",
+              background: "#f9fafb",
+              color: "#374151",
+              cursor: "pointer",
+              flexShrink: 0,
+            }}
+          >
+            Copy
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -507,6 +530,7 @@ export default function DealPage() {
   const [latestRunLoading, setLatestRunLoading] = useState(false);
   const [latestRunError, setLatestRunError] = useState<string | null>(null);
   const [runAssessmentLoading, setRunAssessmentLoading] = useState(false);
+  const [runCheckError, setRunCheckError] = useState<string | null>(null);
 
   // Lender summary state
   const [summary, setSummary] = useState<string | null>(null);
@@ -1476,6 +1500,79 @@ export default function DealPage() {
               </svg>
             </button>
             <h1 className="text-3xl font-bold mb-0 flex-1 min-w-0 truncate">{deal?.name || name || "Deal Details"}</h1>
+            {(() => {
+              const active = latestFindings.filter((f) => {
+                const state = f.workflow_state ?? "open";
+                return state === "open" || state === "acknowledged";
+              });
+              const criticalActive = active.filter((f) => f.severity === "critical").length;
+              const warningsActive = active.filter((f) => f.severity === "warning").length;
+              const label = criticalActive > 0 ? "Not ready to submit" : warningsActive > 0 ? "Needs attention" : "Ready to submit";
+              const style = criticalActive > 0
+                ? { background: "#fee2e2", color: "#991b1b" }
+                : warningsActive > 0
+                  ? { background: "#fef3c7", color: "#92400e" }
+                  : { background: "#d1fae5", color: "#065f46" };
+              return (
+                <span
+                  style={{
+                    padding: "4px 10px",
+                    borderRadius: 6,
+                    fontSize: 12,
+                    fontWeight: 600,
+                    flexShrink: 0,
+                    ...style,
+                  }}
+                >
+                  {label}
+                </span>
+              );
+            })()}
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", flexShrink: 0 }}>
+              {latestRun?.created_at && (
+                <span style={{ fontSize: 12, color: "#6b7280" }}>
+                  Last run: {new Date(latestRun.created_at).toLocaleString()}
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!activeSubmissionId || runAssessmentLoading) return;
+                  setRunAssessmentLoading(true);
+                  setRunCheckError(null);
+                  try {
+                    const res = await fetch(`/api/submissions/${activeSubmissionId}/run`, { method: "POST" });
+                    const json = await res.json().catch(() => ({}));
+                    if (json?.ok && json?.runId) {
+                      await refreshLatestRun();
+                    } else {
+                      setRunCheckError(json?.error ?? "Run checks failed");
+                    }
+                  } catch (err) {
+                    setRunCheckError(err instanceof Error ? err.message : "Run checks failed");
+                  } finally {
+                    setRunAssessmentLoading(false);
+                  }
+                }}
+                disabled={!activeSubmissionId || runAssessmentLoading}
+                style={{
+                  padding: "6px 12px",
+                  fontSize: 13,
+                  fontWeight: 600,
+                  borderRadius: 6,
+                  border: "1px solid #4f46e5",
+                  background: runAssessmentLoading ? "#c7d2fe" : "#4f46e5",
+                  color: "white",
+                  cursor: !activeSubmissionId || runAssessmentLoading ? "not-allowed" : "pointer",
+                  opacity: runAssessmentLoading ? 0.8 : 1,
+                }}
+              >
+                {runAssessmentLoading ? "Running…" : "Run checks"}
+              </button>
+              {runCheckError && (
+                <span style={{ fontSize: 12, color: "#b91c1c" }}>{runCheckError}</span>
+              )}
+            </div>
           </div>
         </div>
         <div style={{ textAlign: "right" }}>

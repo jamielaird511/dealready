@@ -5,7 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
 
 type RunRow = { id?: string; status: string; created_at: string; updated_at?: string };
-type FindingRow = { id: string; severity: string; workflow_state?: string; title?: string; category?: string; message?: string };
+type FindingRow = { id: string; severity: string; workflow_state?: string; title?: string; category?: string; message?: string; fix?: string };
 
 export default function RunResultsPage() {
   const params = useParams();
@@ -491,6 +491,30 @@ export default function RunResultsPage() {
                           <p style={{ fontSize: 13, margin: 0, color: "#6b7280", marginTop: 4 }}>
                             {finding.message}
                           </p>
+                        )}
+                        {finding.fix && finding.fix.trim() && (
+                          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8, marginTop: 8 }}>
+                            <p style={{ margin: 0, fontSize: 12, color: "#6b7280", flex: 1 }}>
+                              <strong style={{ fontWeight: 600 }}>Next step:</strong> {finding.fix.trim()}
+                            </p>
+                            <button
+                              type="button"
+                              onClick={() => navigator.clipboard.writeText(finding.fix!.trim()).catch(() => {})}
+                              style={{
+                                padding: "2px 8px",
+                                fontSize: 11,
+                                fontWeight: 500,
+                                borderRadius: 4,
+                                border: "1px solid #d1d5db",
+                                background: "#f9fafb",
+                                color: "#374151",
+                                cursor: "pointer",
+                                flexShrink: 0,
+                              }}
+                            >
+                              Copy
+                            </button>
+                          </div>
                         )}
                       </div>
                       <select
