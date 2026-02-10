@@ -1451,9 +1451,9 @@ export default function DealPage() {
 
   return (
     <div className="space-y-8">
-      {/* Header with Run DealSense button */}
-      <div className="flex justify-between items-start">
-        <div>
+      {/* Header: left = back + title + badge, right = actions + Last run */}
+      <div className="flex justify-between items-start gap-4 flex-wrap">
+        <div className="flex items-center gap-3 min-w-0 flex-1">
           <button
             onClick={() => router.push("/app/deals")}
             style={{
@@ -1463,159 +1463,125 @@ export default function DealPage() {
               background: "white",
               cursor: "pointer",
               fontWeight: 600,
-              marginBottom: 16,
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = "white";
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = "white";
+              flexShrink: 0,
             }}
           >
             ← Back to Deals
           </button>
-          <div className="flex items-center gap-3 min-w-0">
-            <button
-              onClick={() => {
-                setRenameName(deal?.name || name || "");
-                setRenameError(null);
-                setShowRenameModal(true);
-              }}
-              className="flex-shrink-0 p-2 rounded-md text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors cursor-pointer"
-              title="Rename deal"
-            >
-              <svg
-                className="w-5 h-5"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-                aria-hidden="true"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
-                />
-              </svg>
-            </button>
-            <h1 className="text-3xl font-bold mb-0 flex-1 min-w-0 truncate">{deal?.name || name || "Deal Details"}</h1>
-            {(() => {
-              const active = latestFindings.filter((f) => {
-                const state = f.workflow_state ?? "open";
-                return state === "open" || state === "acknowledged";
-              });
-              const criticalActive = active.filter((f) => f.severity === "critical").length;
-              const warningsActive = active.filter((f) => f.severity === "warning").length;
-              const label = criticalActive > 0 ? "Not ready to submit" : warningsActive > 0 ? "Needs attention" : "Ready to submit";
-              const style = criticalActive > 0
-                ? { background: "#fee2e2", color: "#991b1b" }
-                : warningsActive > 0
-                  ? { background: "#fef3c7", color: "#92400e" }
-                  : { background: "#d1fae5", color: "#065f46" };
-              return (
-                <span
-                  style={{
-                    padding: "4px 10px",
-                    borderRadius: 6,
-                    fontSize: 12,
-                    fontWeight: 600,
-                    flexShrink: 0,
-                    ...style,
-                  }}
-                >
-                  {label}
-                </span>
-              );
-            })()}
-            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", flexShrink: 0 }}>
-              {latestRun?.created_at && (
-                <span style={{ fontSize: 12, color: "#6b7280" }}>
-                  Last run: {new Date(latestRun.created_at).toLocaleString()}
-                </span>
-              )}
-              <button
-                type="button"
-                onClick={async () => {
-                  if (!activeSubmissionId || runAssessmentLoading) return;
-                  setRunAssessmentLoading(true);
-                  setRunCheckError(null);
-                  try {
-                    const res = await fetch(`/api/submissions/${activeSubmissionId}/run`, { method: "POST" });
-                    const json = await res.json().catch(() => ({}));
-                    if (json?.ok && json?.runId) {
-                      await refreshLatestRun();
-                    } else {
-                      setRunCheckError(json?.error ?? "Run checks failed");
-                    }
-                  } catch (err) {
-                    setRunCheckError(err instanceof Error ? err.message : "Run checks failed");
-                  } finally {
-                    setRunAssessmentLoading(false);
-                  }
-                }}
-                disabled={!activeSubmissionId || runAssessmentLoading}
-                style={{
-                  padding: "6px 12px",
-                  fontSize: 13,
-                  fontWeight: 600,
-                  borderRadius: 6,
-                  border: "1px solid #4f46e5",
-                  background: runAssessmentLoading ? "#c7d2fe" : "#4f46e5",
-                  color: "white",
-                  cursor: !activeSubmissionId || runAssessmentLoading ? "not-allowed" : "pointer",
-                  opacity: runAssessmentLoading ? 0.8 : 1,
-                }}
-              >
-                {runAssessmentLoading ? "Running…" : "Run checks"}
-              </button>
-              {runCheckError && (
-                <span style={{ fontSize: 12, color: "#b91c1c" }}>{runCheckError}</span>
-              )}
-            </div>
-          </div>
-        </div>
-        <div style={{ textAlign: "right" }}>
           <button
             onClick={() => {
-              if (!hasBorrower) {
-                alert("Add at least one borrower (person or entity) to run DealSense.");
-                return;
-              }
-              if (!hasFiles) {
-                alert("Please upload files before running DealSense checks.");
-                return;
-              }
-              if (!activeSubmissionId) {
-                alert("No submission available. Please try again.");
-                return;
-              }
-              setDealSenseError(null);
-              setShowDealSenseModal(true);
+              setRenameName(deal?.name || name || "");
+              setRenameError(null);
+              setShowRenameModal(true);
             }}
-            disabled={!hasFiles || !hasBorrower || !activeSubmissionId}
-            className={`px-4 py-2 text-base font-semibold rounded-lg border ${
-              hasFiles && hasBorrower
-                ? "bg-green-600 text-white border-green-700 cursor-pointer hover:bg-green-700"
-                : "bg-gray-200 text-gray-400 border-gray-300 cursor-not-allowed opacity-60"
-            }`}
+            className="flex-shrink-0 p-2 rounded-md text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors cursor-pointer"
+            title="Rename deal"
           >
-            {!hasBorrower ? "Add a borrower to run DealSense" : "Run DealSense"}
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+            </svg>
           </button>
-          {!hasBorrower && (
-            <p style={{ fontSize: 12, color: "#dc2626", marginTop: 8, marginBottom: 0 }}>
+          <h1 className="text-3xl font-bold mb-0 flex-1 min-w-0 truncate">{deal?.name || name || "Deal Details"}</h1>
+          {(() => {
+            const active = latestFindings.filter((f) => {
+              const state = f.workflow_state ?? "open";
+              return state === "open" || state === "acknowledged";
+            });
+            const criticalActive = active.filter((f) => f.severity === "critical").length;
+            const warningsActive = active.filter((f) => f.severity === "warning").length;
+            const label = criticalActive > 0 ? "Not ready to submit" : warningsActive > 0 ? "Needs attention" : "Ready to submit";
+            const style = criticalActive > 0 ? { background: "#fee2e2", color: "#991b1b" } : warningsActive > 0 ? { background: "#fef3c7", color: "#92400e" } : { background: "#d1fae5", color: "#065f46" };
+            return (
+              <span style={{ padding: "4px 10px", borderRadius: 6, fontSize: 12, fontWeight: 600, flexShrink: 0, ...style }}>
+                {label}
+              </span>
+            );
+          })()}
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <button
+              type="button"
+              onClick={async () => {
+                if (!activeSubmissionId || runAssessmentLoading) return;
+                setRunAssessmentLoading(true);
+                setRunCheckError(null);
+                try {
+                  const res = await fetch(`/api/submissions/${activeSubmissionId}/run`, { method: "POST" });
+                  const json = await res.json().catch(() => ({}));
+                  if (json?.ok && json?.runId) {
+                    await refreshLatestRun();
+                  } else {
+                    setRunCheckError(json?.error ?? "Run checks failed");
+                  }
+                } catch (err) {
+                  setRunCheckError(err instanceof Error ? err.message : "Run checks failed");
+                } finally {
+                  setRunAssessmentLoading(false);
+                }
+              }}
+              disabled={!activeSubmissionId || runAssessmentLoading}
+              style={{
+                padding: "8px 16px",
+                fontSize: 14,
+                fontWeight: 600,
+                borderRadius: 8,
+                border: "1px solid #4f46e5",
+                background: runAssessmentLoading ? "#c7d2fe" : "#4f46e5",
+                color: "white",
+                cursor: !activeSubmissionId || runAssessmentLoading ? "not-allowed" : "pointer",
+                opacity: runAssessmentLoading ? 0.8 : 1,
+              }}
+            >
+              {runAssessmentLoading ? "Running…" : "Run checks"}
+            </button>
+            <button
+              type="button"
+              onClick={async () => {
+                if (!dealId || generatingSummary) return;
+                setGeneratingSummary(true);
+                setErrorSummary(null);
+                try {
+                  const res = await fetch(`/api/deals/${dealId}/generate-summary`, { method: "POST" });
+                  const json = await res.json().catch(() => ({}));
+                  if (!res.ok) {
+                    setErrorSummary(json?.error ?? "Generate failed");
+                    return;
+                  }
+                  setSummary(json.summary ?? null);
+                  setSummaryId(json.summary_id ?? null);
+                  setSummaryCreatedAt(new Date().toISOString());
+                } catch (err) {
+                  setErrorSummary(err instanceof Error ? err.message : "Generate failed");
+                } finally {
+                  setGeneratingSummary(false);
+                }
+              }}
+              disabled={generatingSummary}
+              style={{
+                padding: "8px 16px",
+                fontSize: 14,
+                fontWeight: 600,
+                borderRadius: 8,
+                border: "1px solid #059669",
+                background: generatingSummary ? "#a7f3d0" : "white",
+                color: "#059669",
+                cursor: generatingSummary ? "not-allowed" : "pointer",
+              }}
+            >
+              {generatingSummary ? "Generating…" : "Generate lender summary"}
+            </button>
+          </div>
+          {latestRun?.created_at && (
+            <span style={{ fontSize: 12, color: "#6b7280" }}>
+              Last run: {new Date(latestRun.created_at).toLocaleString()}
+            </span>
+          )}
+          {runCheckError && <span style={{ fontSize: 12, color: "#b91c1c" }}>{runCheckError}</span>}
+          {!activeSubmissionId && (
+            <span style={{ fontSize: 12, color: "#6b7280" }}>
               Add at least one borrower (person or entity) to run DealSense.
-            </p>
-          )}
-          {hasBorrower && !hasGuarantor && (
-            <p style={{ fontSize: 12, color: "#d97706", marginTop: 8, marginBottom: 0 }}>
-              No guarantors added. DealSense may miss guarantee-related requirements.
-            </p>
-          )}
-          {hasBorrower && !hasFiles && (
-            <p style={{ fontSize: 12, color: "#6b7280", marginTop: hasGuarantor ? 4 : 8, marginBottom: 0 }}>
-              Upload at least one file to run DealSense
-            </p>
+            </span>
           )}
         </div>
       </div>
@@ -2194,157 +2160,64 @@ export default function DealPage() {
         </div>
       )}
 
-      {/* Latest DealSense Card */}
+      {/* Latest DealSense Card - informational only */}
       {!latestRunLoading && (
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
           <h2 className="text-xl font-semibold mb-4 text-gray-900">Latest DealSense</h2>
 
           {latestRunError && (
-            <p style={{ fontSize: 13, color: "#dc2626", marginBottom: 12 }}>
-              {latestRunError}
-            </p>
+            <p style={{ fontSize: 13, color: "#dc2626", marginBottom: 12 }}>{latestRunError}</p>
           )}
 
           {!latestRun ? (
-            <div>
-              <p style={{ fontSize: 14, color: "#6b7280", marginBottom: 16 }}>
-                No DealSense run yet
-              </p>
-              <button
-                onClick={() => {
-                  if (!hasBorrower) {
-                    alert("Add at least one borrower (person or entity) to run DealSense.");
-                    return;
-                  }
-                  if (!hasFiles) {
-                    alert("Please upload files before running DealSense checks.");
-                    return;
-                  }
-                  if (!activeSubmissionId) {
-                    alert("No submission available. Please try again.");
-                    return;
-                  }
-                  setDealSenseError(null);
-                  setShowDealSenseModal(true);
-                }}
-                disabled={!hasFiles || !hasBorrower || !activeSubmissionId}
-                className={`px-4 py-2 text-base font-semibold rounded-lg border ${
-                  hasFiles && hasBorrower
-                    ? "bg-green-600 text-white border-green-700 cursor-pointer hover:bg-green-700"
-                    : "bg-gray-200 text-gray-400 border-gray-300 cursor-not-allowed opacity-60"
-                }`}
-              >
-                Run DealSense
-              </button>
-            </div>
+            <p style={{ fontSize: 14, color: "#6b7280", marginBottom: 0 }}>No DealSense run yet.</p>
           ) : (
             <>
               <div style={{ marginBottom: 16 }}>
-                <div className="flex items-center gap-3 mb-3">
-                  <span style={{ fontSize: 13, color: "#6b7280" }}>
-                    Last run: {(() => {
-                      const runDate = latestRun.created_at ? new Date(latestRun.created_at) : new Date(0);
-                      const now = new Date();
-                      const diffMs = now.getTime() - runDate.getTime();
-                      const diffMins = Math.floor(diffMs / 60000);
-                      const diffHours = Math.floor(diffMs / 3600000);
-                      const diffDays = Math.floor(diffMs / 86400000);
-                      
-                      if (diffMins < 1) return "Just now";
-                      if (diffMins < 60) return `${diffMins} minute${diffMins > 1 ? "s" : ""} ago`;
-                      if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? "s" : ""} ago`;
-                      if (diffDays < 7) return `${diffDays} day${diffDays > 1 ? "s" : ""} ago`;
-                      return runDate.toLocaleDateString();
-                    })()}
+                {latestRun.status && (
+                  <span
+                    style={{
+                      padding: "4px 8px",
+                      borderRadius: 4,
+                      background:
+                        latestRun.status === "completed" ? "#d1fae5"
+                          : latestRun.status === "running" ? "#dbeafe"
+                          : latestRun.status === "failed" ? "#fee2e2"
+                          : "#e5e7eb",
+                      color:
+                        latestRun.status === "completed" ? "#065f46"
+                          : latestRun.status === "running" ? "#1e40af"
+                          : latestRun.status === "failed" ? "#991b1b"
+                          : "#374151",
+                      fontSize: 11,
+                      fontWeight: 600,
+                      textTransform: "capitalize",
+                      marginRight: 12,
+                    }}
+                  >
+                    {latestRun.status}
                   </span>
-                  {latestRun.status && (
-                    <span
-                      style={{
-                        padding: "4px 8px",
-                        borderRadius: 4,
-                        background:
-                          latestRun.status === "completed"
-                            ? "#d1fae5"
-                            : latestRun.status === "running"
-                            ? "#dbeafe"
-                            : latestRun.status === "failed"
-                            ? "#fee2e2"
-                            : "#e5e7eb",
-                        color:
-                          latestRun.status === "completed"
-                            ? "#065f46"
-                            : latestRun.status === "running"
-                            ? "#1e40af"
-                            : latestRun.status === "failed"
-                            ? "#991b1b"
-                            : "#374151",
-                        fontSize: 11,
-                        fontWeight: 600,
-                        textTransform: "capitalize",
-                      }}
-                    >
-                      {latestRun.status}
-                    </span>
-                  )}
-                </div>
-
-                {/* Finding counts by severity */}
+                )}
                 {latestFindings.length > 0 && (
                   <>
-                    <div style={{ display: "flex", gap: 12, marginBottom: 8 }}>
-                      <div
-                        style={{
-                          padding: "6px 12px",
-                          borderRadius: 6,
-                          background: "#fee2e2",
-                          color: "#991b1b",
-                          fontSize: 13,
-                          fontWeight: 600,
-                        }}
-                      >
+                    <div style={{ display: "flex", gap: 12, marginTop: 12, marginBottom: 8 }}>
+                      <span style={{ padding: "6px 12px", borderRadius: 6, background: "#fee2e2", color: "#991b1b", fontSize: 13, fontWeight: 600 }}>
                         Critical: {latestFindings.filter((f) => f.severity === "critical").length}
-                      </div>
-                      <div
-                        style={{
-                          padding: "6px 12px",
-                          borderRadius: 6,
-                          background: "#fef3c7",
-                          color: "#92400e",
-                          fontSize: 13,
-                          fontWeight: 600,
-                        }}
-                      >
+                      </span>
+                      <span style={{ padding: "6px 12px", borderRadius: 6, background: "#fef3c7", color: "#92400e", fontSize: 13, fontWeight: 600 }}>
                         Warnings: {latestFindings.filter((f) => f.severity === "warning").length}
-                      </div>
-                      <div
-                        style={{
-                          padding: "6px 12px",
-                          borderRadius: 6,
-                          background: "#d1fae5",
-                          color: "#065f46",
-                          fontSize: 13,
-                          fontWeight: 600,
-                        }}
-                      >
+                      </span>
+                      <span style={{ padding: "6px 12px", borderRadius: 6, background: "#d1fae5", color: "#065f46", fontSize: 13, fontWeight: 600 }}>
                         Info: {latestFindings.filter((f) => f.severity === "info").length}
-                      </div>
+                      </span>
                     </div>
-
-                    {/* Active vs completed counts */}
-                    <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 16 }}>
-                      Active: {latestFindings.filter((f) => {
-                        const state = f.workflow_state ?? "open";
-                        return state === "open" || state === "acknowledged";
-                      }).length} • Resolved/Dismissed: {latestFindings.filter((f) => {
-                        const state = f.workflow_state ?? "open";
-                        return state === "resolved" || state === "dismissed";
-                      }).length}
+                    <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 0 }}>
+                      Active: {latestFindings.filter((f) => { const s = f.workflow_state ?? "open"; return s === "open" || s === "acknowledged"; }).length} • Resolved/Dismissed: {latestFindings.filter((f) => { const s = f.workflow_state ?? "open"; return s === "resolved" || s === "dismissed"; }).length}
                     </div>
                   </>
                 )}
               </div>
-
-              <div className="flex gap-3 flex-wrap items-center">
+              <div>
                 {activeSubmissionId ? (
                   <button
                     onClick={() => router.push(`/app/submissions/${activeSubmissionId}`)}
@@ -2353,45 +2226,16 @@ export default function DealPage() {
                     View latest results
                   </button>
                 ) : (
-                  <>
-                    <button
-                      disabled
-                      className="px-4 py-2 text-base font-semibold rounded-lg border border-gray-300 bg-gray-100 text-gray-400 cursor-not-allowed"
-                    >
-                      View latest results
-                    </button>
-                    <span className="text-sm text-gray-500">Run DealSense to generate results.</span>
-                  </>
+                  <button
+                    disabled
+                    className="px-4 py-2 text-base font-semibold rounded-lg border border-gray-300 bg-gray-100 text-gray-400 cursor-not-allowed"
+                  >
+                    View latest results
+                  </button>
                 )}
-                <button
-                  onClick={() => {
-                    if (!hasBorrower) {
-                      alert("Add at least one borrower (person or entity) to run DealSense.");
-                      return;
-                    }
-                    if (!hasFiles) {
-                      alert("Please upload files before running DealSense checks.");
-                      return;
-                    }
-                    if (!activeSubmissionId) {
-                      alert("No submission available. Please try again.");
-                      return;
-                    }
-                    setDealSenseError(null);
-                    setShowDealSenseModal(true);
-                  }}
-                  disabled={!hasFiles || !hasBorrower || !activeSubmissionId}
-                  className={`px-4 py-2 text-base font-semibold rounded-lg border ${
-                    hasFiles && hasBorrower
-                      ? "bg-white text-gray-700 border-gray-300 cursor-pointer hover:bg-gray-50"
-                      : "bg-white text-gray-400 border-gray-300 cursor-not-allowed opacity-60"
-                  }`}
-                >
-                  Run again
-                </button>
               </div>
-              </>
-            )}
+            </>
+          )}
         </div>
       )}
 
@@ -3018,43 +2862,6 @@ export default function DealPage() {
               </>
             );
           })()
-        )}
-        {activeSubmissionId && (
-          <button
-            type="button"
-            onClick={async () => {
-              if (!activeSubmissionId || runAssessmentLoading) return;
-              setRunAssessmentLoading(true);
-              try {
-                const res = await fetch(`/api/submissions/${activeSubmissionId}/run`, { method: "POST" });
-                const json = await res.json().catch(() => ({}));
-                if (json?.ok && json?.runId) {
-                  await refreshLatestRun();
-                } else {
-                  alert(json?.error ?? "Run assessment failed");
-                }
-              } catch (err) {
-                console.error("Run assessment failed:", err);
-                alert(err instanceof Error ? err.message : "Run assessment failed");
-              } finally {
-                setRunAssessmentLoading(false);
-              }
-            }}
-            disabled={runAssessmentLoading}
-            style={{
-              padding: "8px 16px",
-              fontSize: 14,
-              fontWeight: 600,
-              borderRadius: 8,
-              border: "1px solid #4f46e5",
-              background: runAssessmentLoading ? "#c7d2fe" : "#4f46e5",
-              color: "white",
-              cursor: runAssessmentLoading ? "not-allowed" : "pointer",
-              opacity: runAssessmentLoading ? 0.8 : 1,
-            }}
-          >
-            {runAssessmentLoading ? "Running…" : "Run assessment"}
-          </button>
         )}
       </div>
 
