@@ -540,6 +540,8 @@ export default function DealPage() {
   const [generatingSummary, setGeneratingSummary] = useState(false);
   const [summaryCreatedAt, setSummaryCreatedAt] = useState<string | null>(null);
 
+  const [activeTab, setActiveTab] = useState<"overview" | "parties" | "documents" | "checks" | "lender">("overview");
+
   async function loadFilesWithChunkCounts(submissionId: string): Promise<SubmissionFileRow[]> {
     const supabase = supabaseBrowser();
     const { data: filesData, error } = await supabase
@@ -1586,6 +1588,30 @@ export default function DealPage() {
         </div>
       </div>
 
+      {/* Tab bar */}
+      <div style={{ display: "flex", gap: 24, borderBottom: "2px solid #e5e7eb", flexWrap: "wrap" }}>
+        {(["overview", "parties", "documents", "checks", "lender"] as const).map((tab) => (
+          <button
+            key={tab}
+            type="button"
+            onClick={() => setActiveTab(tab)}
+            style={{
+              padding: "10px 4px",
+              marginBottom: -2,
+              fontSize: 14,
+              fontWeight: activeTab === tab ? 600 : 500,
+              border: "none",
+              borderBottom: activeTab === tab ? "3px solid #4f46e5" : "3px solid transparent",
+              background: "none",
+              color: activeTab === tab ? "#3730a3" : "#6b7280",
+              cursor: "pointer",
+            }}
+          >
+            {tab === "overview" ? "Overview" : tab === "parties" ? "Parties" : tab === "documents" ? "Documents" : tab === "checks" ? "Checks" : "Recommendations"}
+          </button>
+        ))}
+      </div>
+
       {/* DealSense Confirmation Modal */}
       {showDealSenseModal && (
         <div
@@ -2160,10 +2186,13 @@ export default function DealPage() {
         </div>
       )}
 
+      {/* Tab content: Overview */}
+      {activeTab === "overview" && (
+        <>
       {/* Latest DealSense Card - informational only */}
       {!latestRunLoading && (
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
-          <h2 className="text-xl font-semibold mb-4 text-gray-900">Latest DealSense</h2>
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm" style={{ padding: 24 }}>
+          <h2 className="text-xl font-semibold text-gray-900" style={{ marginBottom: 16 }}>Latest DealSense</h2>
 
           {latestRunError && (
             <p style={{ fontSize: 13, color: "#dc2626", marginBottom: 12 }}>{latestRunError}</p>
@@ -2173,12 +2202,12 @@ export default function DealPage() {
             <p style={{ fontSize: 14, color: "#6b7280", marginBottom: 0 }}>No DealSense run yet.</p>
           ) : (
             <>
-              <div style={{ marginBottom: 16 }}>
+              <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12, marginBottom: 16 }}>
                 {latestRun.status && (
                   <span
                     style={{
-                      padding: "4px 8px",
-                      borderRadius: 4,
+                      padding: "4px 10px",
+                      borderRadius: 6,
                       background:
                         latestRun.status === "completed" ? "#d1fae5"
                           : latestRun.status === "running" ? "#dbeafe"
@@ -2189,10 +2218,9 @@ export default function DealPage() {
                           : latestRun.status === "running" ? "#1e40af"
                           : latestRun.status === "failed" ? "#991b1b"
                           : "#374151",
-                      fontSize: 11,
+                      fontSize: 12,
                       fontWeight: 600,
                       textTransform: "capitalize",
-                      marginRight: 12,
                     }}
                   >
                     {latestRun.status}
@@ -2200,24 +2228,22 @@ export default function DealPage() {
                 )}
                 {latestFindings.length > 0 && (
                   <>
-                    <div style={{ display: "flex", gap: 12, marginTop: 12, marginBottom: 8 }}>
-                      <span style={{ padding: "6px 12px", borderRadius: 6, background: "#fee2e2", color: "#991b1b", fontSize: 13, fontWeight: 600 }}>
-                        Critical: {latestFindings.filter((f) => f.severity === "critical").length}
-                      </span>
-                      <span style={{ padding: "6px 12px", borderRadius: 6, background: "#fef3c7", color: "#92400e", fontSize: 13, fontWeight: 600 }}>
-                        Warnings: {latestFindings.filter((f) => f.severity === "warning").length}
-                      </span>
-                      <span style={{ padding: "6px 12px", borderRadius: 6, background: "#d1fae5", color: "#065f46", fontSize: 13, fontWeight: 600 }}>
-                        Info: {latestFindings.filter((f) => f.severity === "info").length}
-                      </span>
-                    </div>
-                    <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 0 }}>
-                      Active: {latestFindings.filter((f) => { const s = f.workflow_state ?? "open"; return s === "open" || s === "acknowledged"; }).length} • Resolved/Dismissed: {latestFindings.filter((f) => { const s = f.workflow_state ?? "open"; return s === "resolved" || s === "dismissed"; }).length}
-                    </div>
+                    <span style={{ padding: "6px 12px", borderRadius: 6, background: "#fee2e2", color: "#991b1b", fontSize: 13, fontWeight: 600 }}>
+                      Critical: {latestFindings.filter((f) => f.severity === "critical").length}
+                    </span>
+                    <span style={{ padding: "6px 12px", borderRadius: 6, background: "#fef3c7", color: "#92400e", fontSize: 13, fontWeight: 600 }}>
+                      Warnings: {latestFindings.filter((f) => f.severity === "warning").length}
+                    </span>
+                    <span style={{ padding: "6px 12px", borderRadius: 6, background: "#d1fae5", color: "#065f46", fontSize: 13, fontWeight: 600 }}>
+                      Info: {latestFindings.filter((f) => f.severity === "info").length}
+                    </span>
+                    <span style={{ fontSize: 12, color: "#6b7280" }}>
+                      Active: {latestFindings.filter((f) => { const s = f.workflow_state ?? "open"; return s === "open" || s === "acknowledged"; }).length} • Resolved: {latestFindings.filter((f) => { const s = f.workflow_state ?? "open"; return s === "resolved" || s === "dismissed"; }).length}
+                    </span>
                   </>
                 )}
               </div>
-              <div>
+              <div style={{ display: "flex", justifyContent: "flex-end" }}>
                 {activeSubmissionId ? (
                   <button
                     onClick={() => router.push(`/app/submissions/${activeSubmissionId}`)}
@@ -2239,11 +2265,10 @@ export default function DealPage() {
         </div>
       )}
 
-      {/* Deal Details Section */}
+      {/* Deal Details (overview): saveMessage, Notes, Save */}
       {deal && (
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm" style={{ padding: 24 }}>
           <h2 className="text-xl font-semibold mb-5 text-gray-900">Deal Details</h2>
-          
           {saveMessage && (
             <div
               style={{
@@ -2260,7 +2285,33 @@ export default function DealPage() {
               {saveMessage.text}
             </div>
           )}
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ display: "block", fontSize: 14, fontWeight: 600, marginBottom: 8, color: "#374151" }}>Notes</label>
+            <textarea
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="Add notes about this deal"
+              rows={4}
+              style={{ width: "100%", padding: "10px 12px", fontSize: 14, border: "1px solid rgba(0,0,0,0.2)", borderRadius: 8, outline: "none", fontFamily: "inherit", resize: "vertical" }}
+            />
+          </div>
+          <div>
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              style={{ padding: "10px 20px", fontSize: 14, fontWeight: 600, borderRadius: 8, border: "1px solid rgba(0,0,0,0.2)", background: "#10b981", color: "white", cursor: saving ? "not-allowed" : "pointer", opacity: saving ? 0.6 : 1 }}
+            >
+              {saving ? "Saving..." : "Save"}
+            </button>
+          </div>
+        </div>
+      )}
+        </>
+      )}
 
+      {/* Tab content: Parties */}
+      {activeTab === "parties" && (
+        <>
           {/* Customers Section */}
           <div style={{ marginBottom: 32 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
@@ -2422,59 +2473,12 @@ export default function DealPage() {
             </div>
 
           </div>
-
-          <div style={{ marginBottom: 16 }}>
-            <label
-              style={{
-                display: "block",
-                fontSize: 14,
-                fontWeight: 600,
-                marginBottom: 8,
-                color: "#374151",
-              }}
-            >
-              Notes
-            </label>
-            <textarea
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              placeholder="Add notes about this deal"
-              rows={4}
-              style={{
-                width: "100%",
-                padding: "10px 12px",
-                fontSize: 14,
-                border: "1px solid rgba(0,0,0,0.2)",
-                borderRadius: 8,
-                outline: "none",
-                fontFamily: "inherit",
-                resize: "vertical",
-              }}
-            />
-          </div>
-
-          <div>
-            <button
-              onClick={handleSave}
-              disabled={saving}
-              style={{
-                padding: "10px 20px",
-                fontSize: 14,
-                fontWeight: 600,
-                borderRadius: 8,
-                border: "1px solid rgba(0,0,0,0.2)",
-                background: "#10b981",
-                color: "white",
-                cursor: saving ? "not-allowed" : "pointer",
-                opacity: saving ? 0.6 : 1,
-              }}
-            >
-              {saving ? "Saving..." : "Save"}
-            </button>
-          </div>
-        </div>
+        </>
       )}
 
+      {/* Tab content: Documents */}
+      {activeTab === "documents" && (
+      <>
       {/* Upload Pack Section */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
         <div className="flex justify-between items-center mb-4">
@@ -2720,7 +2724,12 @@ export default function DealPage() {
           );
         })()}
       </div>
+        </>
+      )}
 
+      {/* Tab content: Checks */}
+      {activeTab === "checks" && (
+      <>
       {/* Assessment Section */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5" style={{ marginTop: 24 }}>
         <h2 className="text-xl font-semibold mb-0 text-gray-900" style={{ marginBottom: 16 }}>Assessment</h2>
@@ -2864,7 +2873,12 @@ export default function DealPage() {
           })()
         )}
       </div>
+        </>
+      )}
 
+      {/* Tab content: Recommendations */}
+      {activeTab === "lender" && (
+      <>
       {/* Lender Summary */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5" style={{ marginTop: 24 }}>
         <h2 className="text-xl font-semibold mb-0 text-gray-900" style={{ marginBottom: 16 }}>Lender Summary</h2>
@@ -2960,6 +2974,8 @@ export default function DealPage() {
           </>
         )}
       </div>
+        </>
+      )}
 
       {/* Upload Modal - portaled to body so it appears above sticky header */}
       {showUploadModal && mounted && createPortal(
