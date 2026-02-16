@@ -79,6 +79,14 @@ export default function DealsPage() {
 
       const latestRun = runs[0] as LatestRunRow;
 
+      if (!latestRun?.id) {
+        setDealSenseData((prev) => ({
+          ...prev,
+          [dealId]: { ...initialDealSense, latestSubmissionId: submissionId, latestRun, loading: false },
+        }));
+        return;
+      }
+
       const { data: findings, error: findingsError } = await supabase
         .from("submission_run_findings")
         .select("severity, status, workflow_state")
@@ -86,8 +94,9 @@ export default function DealsPage() {
         .order("created_at", { ascending: false });
 
       if (findingsError) {
-        const err = findingsError as { code?: string; message?: string; details?: unknown; hint?: string };
-        console.error("Findings error", { dealId, runId: latestRun?.id, code: err?.code, message: err?.message, details: err?.details, hint: err?.hint });
+        console.error("Findings error raw", findingsError);
+        console.error("Findings error context", { dealId, runId: latestRun?.id, submissionId });
+        console.error("Findings error json", JSON.stringify(findingsError));
         setDealSenseData((prev) => ({
           ...prev,
           [dealId]: { ...initialDealSense, latestSubmissionId: submissionId, latestRun, loading: false, error: "Failed to load findings" },

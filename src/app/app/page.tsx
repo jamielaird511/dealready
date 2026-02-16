@@ -46,6 +46,8 @@ export default function AppHome() {
           name: "New Deal",
           status: "draft",
           organization_id: organizationId,
+          purpose_type: "other",
+          purpose_notes: null,
         })
         .select()
         .single();

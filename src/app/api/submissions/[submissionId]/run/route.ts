@@ -58,6 +58,158 @@ function hasSecuredEvidence(files: FileRow[]): boolean {
   });
 }
 
+// Purpose-aware DealSense v1: rule config for supported purposes
+const PURPOSE_RULES: Record<string, { critical: string[]; warning: string[]; info: string[] }> = {
+  business_purchase: {
+    critical: ["spa", "financials", "forecasts", "sop"],
+    warning: ["debtors", "creditors", "tax", "lending_schedule"],
+    info: ["insurance", "valuation", "key_dates", "ownership"],
+  },
+  refinance: {
+    critical: ["lending_schedule", "financials", "sop"],
+    warning: ["tax", "debtors", "creditors", "bank_statements"],
+    info: ["reason_for_refinance", "valuation", "insurance"],
+  },
+  working_capital: {
+    critical: ["financials", "cashflow", "sop"],
+    warning: ["debtors", "creditors", "tax", "lending_schedule"],
+    info: ["stock", "contracts", "insurance"],
+  },
+};
+
+// Map rule keys to existing checks (skip keys with no check)
+type RuleCheck = { present: (files: FileRow[]) => boolean; finding_id: string; title: string; fix: string };
+function ruleChecks(): Record<string, RuleCheck> {
+  return {
+    financials: {
+      present: (files) => files.some((f) => (f.category ?? "").toLowerCase() === "financials"),
+      finding_id: "docs_missing_financials",
+      title: "Missing Financial statements",
+      fix: "Upload financial statements (P&L, accounts).",
+    },
+    forecasts: {
+      present: (files) => hasCategoryOrKeywords(files, "forecasts", ["forecast", "budget", "projection", "cashflow"]) || hasCategoryOrKeywords(files, "forecast", ["forecast", "budget", "projection", "cashflow"]),
+      finding_id: "docs_missing_forecast",
+      title: "Missing Forecasts / budget",
+      fix: "Upload forecast or budget with category Forecasts.",
+    },
+    debtors: {
+      present: (files) => hasCategoryOrKeywords(files, "debtors", ["debtor", "debtors", "aging", "ageing"]),
+      finding_id: "docs_missing_debtor_aging",
+      title: "Missing Debtor aging",
+      fix: "Upload debtor aging report.",
+    },
+    creditors: {
+      present: (files) => hasCategoryOrKeywords(files, "creditors", ["creditor", "creditors", "aging", "ageing"]),
+      finding_id: "docs_missing_creditor_aging",
+      title: "Missing Creditor aging",
+      fix: "Upload creditor aging report.",
+    },
+    tax: {
+      present: (files) => hasCategoryOrKeywords(files, "tax", ["ird", "tax", "gst", "income tax"]),
+      finding_id: "docs_missing_tax",
+      title: "Missing IRD/tax documents",
+      fix: "Upload tax/IRD documents.",
+    },
+    lending_schedule: {
+      present: (files) => hasCategoryOrKeywords(files, "lending", ["facility", "facilities", "lending", "loan schedule", "term loan"]),
+      finding_id: "docs_missing_lending_schedule",
+      title: "Missing Lending schedule",
+      fix: "Upload facility or lending schedule.",
+    },
+    bank_statements: {
+      present: (files) => hasCategoryOrKeywords(files, "bank_statements", ["bank statement", "statement", "transactions"]),
+      finding_id: "docs_missing_bank_statements",
+      title: "Missing Bank statements",
+      fix: "Upload bank statements (e.g. last 6 months).",
+    },
+    insurance: {
+      present: (files) => hasCategoryOrKeywords(files, "insurance", ["insurance", "insur"]),
+      finding_id: "docs_missing_insurance",
+      title: "Missing Insurance",
+      fix: "Upload insurance evidence if applicable.",
+    },
+    valuation: {
+      present: (files) => hasCategoryOrKeywords(files, "valuation", ["valuation", "val report", "valn"]),
+      finding_id: "docs_missing_valuation",
+      title: "Missing Valuation",
+      fix: "Upload valuation if applicable.",
+    },
+    cashflow: {
+      present: (files) => hasCategoryOrKeywords(files, "forecast", ["forecast", "budget", "projection", "cashflow"]) || hasCategoryOrKeywords(files, "forecasts", ["forecast", "budget", "projection", "cashflow"]),
+      finding_id: "docs_missing_forecast",
+      title: "Missing Cashflow forecast",
+      fix: "Upload cashflow forecast or projections.",
+    },
+  };
+}
+
+function generateFindingsPurposeAware(submissionId: string, files: FileRow[], purposeType: string): FindingRow[] {
+  const config = PURPOSE_RULES[purposeType];
+  if (!config) return [];
+
+  const checks = ruleChecks();
+  const findings: FindingRow[] = [];
+  const scoreBySeverity = { critical: 30, warning: 10, info: 0 };
+  const seenFindingIds = new Set<string>();
+
+  for (const [severity, keys] of [["critical", config.critical], ["warning", config.warning], ["info", config.info]] as const) {
+    for (const key of keys) {
+      const check = checks[key as keyof typeof checks];
+      if (!check || check.present(files) || seenFindingIds.has(check.finding_id)) continue;
+      seenFindingIds.add(check.finding_id);
+      findings.push({
+        run_id: "",
+        severity,
+        category: "documents",
+        message: `${check.title} required for this purpose.`,
+        finding_id: check.finding_id,
+        title: check.title,
+        fix: check.fix,
+        score_impact: scoreBySeverity[severity],
+        evidence: null,
+        status: "new",
+      });
+    }
+  }
+  return findings;
+}
+
+function computeSummaryPurposeAware(
+  findings: FindingRow[],
+  workflowStateByFindingId?: Map<string, string>
+): { score: number; assessment_status: string; top_fixes: string[] } {
+  const active = workflowStateByFindingId
+    ? findings.filter((f) => workflowStateByFindingId.get(f.finding_id) !== "resolved")
+    : findings;
+
+  const missingCritical = active.filter((f) => f.severity === "critical").length;
+  const missingWarning = active.filter((f) => f.severity === "warning").length;
+
+  let score = 100 - missingCritical * 30 - missingWarning * 10;
+  score = Math.max(0, score);
+
+  let assessment_status: string;
+  if (missingCritical >= 2) assessment_status = "not_ready";
+  else if (missingCritical === 1 || (missingCritical === 0 && missingWarning >= 3)) assessment_status = "needs_review";
+  else assessment_status = "ready";
+
+  const sorted = [...active].sort((a, b) => {
+    const sev = SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity];
+    if (sev !== 0) return sev;
+    return b.score_impact - a.score_impact;
+  });
+  const seen = new Set<string>();
+  const top_fixes: string[] = [];
+  for (const f of sorted) {
+    if (top_fixes.length >= 5) break;
+    if (seen.has(f.fix)) continue;
+    seen.add(f.fix);
+    top_fixes.push(f.fix);
+  }
+  return { score, assessment_status, top_fixes };
+}
+
 const ALLOWED_DOC_TYPES = [
   "bank_statement", "financial_statement", "tax_return", "id_document", "drivers_license", "passport",
   "payslip", "rental_statement", "valuation_report", "insurance_schedule", "loan_facility_letter",
@@ -526,12 +678,25 @@ export async function POST(
 
     const { data: submission, error: subError } = await supabase
       .from("submissions")
-      .select("id, org_id")
+      .select("id, org_id, deal_id")
       .eq("id", submissionId)
       .maybeSingle();
 
     if (subError || !submission) {
       return NextResponse.json({ error: "Submission not found" }, { status: 404 });
+    }
+
+    let purposeType = "other";
+    const dealId = (submission as { deal_id?: string | null }).deal_id;
+    if (dealId) {
+      const { data: deal } = await supabase
+        .from("deals")
+        .select("purpose_type")
+        .eq("id", dealId)
+        .maybeSingle();
+      const pt = (deal as { purpose_type?: string } | null)?.purpose_type;
+      if (pt && PURPOSE_RULES[pt]) purposeType = pt;
+      else if (typeof pt === "string") purposeType = pt;
     }
 
     const { data: membership } = await supabase
@@ -645,7 +810,10 @@ export async function POST(
       }
     }
 
-    const findings = generateFindings(submissionId, files);
+    const usePurposeAware = PURPOSE_RULES[purposeType] !== undefined;
+    const findings = usePurposeAware
+      ? generateFindingsPurposeAware(submissionId, files, purposeType)
+      : generateFindings(submissionId, files);
     const currentFindingIds = new Set(findings.map((f) => f.finding_id));
     const syntheticFindingIds = new Set<string>();
 
@@ -772,7 +940,9 @@ export async function POST(
       ...findingsToInsert.map((p): [string, string] => [p.finding_id, p.workflow_state ?? "open"]),
       ...aiFindings.map((f): [string, string] => [f.finding_id, "open"]),
     ]);
-    const { score, assessment_status, top_fixes } = computeSummary(findingsForSummary, workflowStateByFindingId);
+    const { score, assessment_status, top_fixes } = usePurposeAware
+      ? computeSummaryPurposeAware(findingsForSummary, workflowStateByFindingId)
+      : computeSummary(findingsForSummary, workflowStateByFindingId);
 
     const { error: updateError } = await supabase
       .from("submission_runs")

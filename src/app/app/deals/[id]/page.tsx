@@ -19,13 +19,118 @@ type SubmissionFileRow = {
   extracted_text?: string | null;
   chunk_count?: number;
 };
-type DealRow = { id?: string; name?: string; status?: string; notes?: string };
+type DealRow = { id?: string; name?: string; status?: string; notes?: string; purpose_type?: string; purpose_notes?: string | null };
 type DealPartyRaw = { id: string; deal_id?: string; roles?: string[]; role?: string | null; notes?: string | null; entities?: unknown; type?: string | null; name?: string | null };
 type DealPartyRow = { id: string; roles?: string[]; role?: string | null };
 type DealPartyNormalized = { id: string; deal_id?: string; roles?: string[]; role?: string | null; notes?: string | null; entityId?: string | null; entity_type?: string | null; display_name?: string | null; email?: string | null; phone?: string | null; type?: string | null; name?: string | null };
 type RunRow = { id?: string; created_at?: string; status?: string; score?: number; assessment_status?: string; assessed_at?: string; top_fixes?: string[] };
 type FindingRow = { id?: string; severity?: string; status?: string; workflow_state?: string; title?: string; message?: string; fix?: string; score_impact?: number; resolved_at?: string; category?: string };
 type SupabaseErrorLike = { message?: string; details?: unknown; hint?: string; code?: string };
+
+type DocTier = "required" | "recommended" | "supporting";
+type ChecklistItem = { key: string; label: string; tier: DocTier; acceptedCategories: string[]; help?: string };
+
+const CATEGORY_LABELS: Record<string, string> = {
+  financials: "Financials",
+  tax: "Tax",
+  forecasts: "Forecasts",
+  business_plan: "Business Plan",
+  broker_app: "Broker application/SoP",
+  security: "Security",
+  other: "Other",
+};
+
+const PURPOSE_LABELS: Record<string, string> = {
+  business_purchase: "Business purchase",
+  startup: "Start-up / new business",
+  refinance: "Refinance / restructure",
+  equipment: "Equipment or asset purchase",
+  working_capital: "Working capital",
+  property_purchase: "Property purchase (owner-occupied)",
+  shareholder_buyout: "Shareholder buyout",
+  expansion: "Business expansion",
+  other: "Other",
+};
+
+const PURPOSE_CHECKLIST: Record<string, ChecklistItem[]> = {
+  business_purchase: [
+    { key: "bp_narrative", label: "Submission / Application narrative", tier: "required", acceptedCategories: ["broker_app"] },
+    { key: "bp_target_financials", label: "Target financials (2–3 years)", tier: "required", acceptedCategories: ["financials"] },
+    { key: "bp_ytd_accounts", label: "Latest YTD / management accounts", tier: "required", acceptedCategories: ["financials"] },
+    { key: "bp_forecasts", label: "Forecasts + assumptions", tier: "required", acceptedCategories: ["forecasts", "business_plan"] },
+    { key: "bp_business_plan", label: "Business plan / rationale", tier: "required", acceptedCategories: ["business_plan"] },
+    { key: "bp_bank_statements", label: "Bank statements", tier: "recommended", acceptedCategories: ["financials"] },
+    { key: "bp_tax", label: "Tax / IRD returns", tier: "recommended", acceptedCategories: ["tax"] },
+    { key: "bp_security", label: "Security schedule / property details", tier: "recommended", acceptedCategories: ["security"] },
+    { key: "bp_due_diligence", label: "Due diligence / supporting pack", tier: "supporting", acceptedCategories: ["other"] },
+    { key: "bp_valuation", label: "Valuation", tier: "supporting", acceptedCategories: ["security", "other"] },
+  ],
+  refinance: [
+    { key: "ref_narrative", label: "Submission narrative", tier: "required", acceptedCategories: ["broker_app"] },
+    { key: "ref_lending", label: "Current lending position / facilities", tier: "required", acceptedCategories: ["broker_app", "other"] },
+    { key: "ref_financials", label: "Financials", tier: "required", acceptedCategories: ["financials"] },
+    { key: "ref_bank", label: "Bank statements", tier: "recommended", acceptedCategories: ["financials"] },
+    { key: "ref_tax", label: "Tax returns", tier: "recommended", acceptedCategories: ["tax"] },
+    { key: "ref_security", label: "Security documents", tier: "recommended", acceptedCategories: ["security"] },
+  ],
+  equipment: [
+    { key: "eq_narrative", label: "Narrative", tier: "required", acceptedCategories: ["broker_app"] },
+    { key: "eq_quote", label: "Quote / invoice", tier: "required", acceptedCategories: ["other"] },
+    { key: "eq_repayment", label: "Repayment source evidence", tier: "required", acceptedCategories: ["financials", "forecasts"] },
+    { key: "eq_asset", label: "Asset details / specs", tier: "recommended", acceptedCategories: ["other"] },
+    { key: "eq_insurance", label: "Insurance / security", tier: "recommended", acceptedCategories: ["security"] },
+  ],
+  startup: [
+    { key: "st_narrative", label: "Narrative", tier: "required", acceptedCategories: ["broker_app"] },
+    { key: "st_business_plan", label: "Business plan", tier: "required", acceptedCategories: ["business_plan"] },
+    { key: "st_forecasts", label: "Forecasts", tier: "required", acceptedCategories: ["forecasts"] },
+    { key: "st_founders", label: "Founders background / CVs", tier: "recommended", acceptedCategories: ["other"] },
+    { key: "st_equity", label: "Evidence of equity / funds", tier: "recommended", acceptedCategories: ["other", "financials"] },
+  ],
+  working_capital: [
+    { key: "wc_narrative", label: "Narrative", tier: "required", acceptedCategories: ["broker_app"] },
+    { key: "wc_financials", label: "Current financials", tier: "required", acceptedCategories: ["financials"] },
+    { key: "wc_bank", label: "Bank statements", tier: "recommended", acceptedCategories: ["financials"] },
+    { key: "wc_forecasts", label: "Forecasts", tier: "recommended", acceptedCategories: ["forecasts"] },
+  ],
+  other: [],
+};
+
+function hasAnyFileInCategories(files: SubmissionFileRow[], categories: string[]): boolean {
+  const norm = (s: string) => s.toLowerCase().trim();
+  const valid = categories.filter((c) => c != null && c !== "");
+  if (valid.length === 0) return false;
+  return valid.some((cat) => files.some((f) => norm(f.category ?? "") === norm(cat)));
+}
+
+function checklistStatusForItem(files: SubmissionFileRow[], item: ChecklistItem): "uploaded" | "missing" {
+  return hasAnyFileInCategories(files, item.acceptedCategories) ? "uploaded" : "missing";
+}
+
+function tierStats(files: SubmissionFileRow[], items: ChecklistItem[], tier: DocTier): { uploaded: number; total: number } {
+  const tierItems = items.filter((i) => i.tier === tier);
+  const total = tierItems.length;
+  const uploaded = tierItems.filter((i) => hasAnyFileInCategories(files, i.acceptedCategories)).length;
+  return { uploaded, total };
+}
+
+const UPLOAD_CATEGORY_PRIORITY = ["broker_app", "financials", "forecasts", "business_plan", "tax", "security", "other"] as const;
+
+function normalizeAcceptedToUploadCategory(accepted: string[]): string {
+  const valid = accepted.filter((a) => a != null && String(a).trim() !== "");
+  for (const key of UPLOAD_CATEGORY_PRIORITY) {
+    const matched = valid.some((a) => {
+      const l = String(a).toLowerCase().trim();
+      if (l === key) return true;
+      if (l.includes(key.replace(/_/g, " "))) return true;
+      const label = CATEGORY_LABELS[key];
+      if (label && (l.includes(label.toLowerCase()) || label.toLowerCase().includes(l))) return true;
+      return false;
+    });
+    if (matched) return key;
+  }
+  return "other";
+}
 
 function getErrorMessage(e: unknown, fallback: string): string {
   if (e instanceof Error) return e.message;
@@ -483,7 +588,9 @@ export default function DealPage() {
   ];
   
   const [notes, setNotes] = useState("");
-  
+  const [purposeType, setPurposeType] = useState<string>("other");
+  const [purposeNotes, setPurposeNotes] = useState<string>("");
+
   // File upload state (using first submission automatically)
   const [activeSubmissionId, setActiveSubmissionId] = useState<string | null>(null);
   const [files, setFiles] = useState<SubmissionFileRow[]>([]);
@@ -613,6 +720,8 @@ export default function DealPage() {
       setName(data.name || "");
       setStatus(data.status || "draft");
       setNotes(data.notes || "");
+      setPurposeType(data.purpose_type ?? "other");
+      setPurposeNotes(data.purpose_notes ?? "");
       setLoading(false);
     }
 
@@ -926,6 +1035,8 @@ export default function DealPage() {
         .update({
           status: status,
           notes: notes.trim() || null,
+          purpose_type: purposeType,
+          purpose_notes: purposeType === "other" ? (purposeNotes.trim() || null) : null,
           updated_at: new Date().toISOString(),
         })
         .eq("id", dealId)
@@ -933,12 +1044,9 @@ export default function DealPage() {
         .maybeSingle();
 
       if (updateError) {
-        console.error("Error updating deal:", {
-          message: updateError.message,
-          details: updateError.details,
-          hint: updateError.hint,
-          code: updateError.code,
-        });
+        console.error("Error updating deal raw:", updateError);
+        console.error("Error updating deal json:", JSON.stringify(updateError));
+        console.error("Error updating deal context:", { dealId, status, purposeType, purposeNotes, notesLen: notes?.length ?? 0 });
         setSaveMessage({ type: "error", text: "Failed to save deal. Please try again." });
         setSaving(false);
         return;
@@ -954,6 +1062,8 @@ export default function DealPage() {
       setName(updatedDeal.name || "");
       setStatus(updatedDeal.status || "draft");
       setNotes(updatedDeal.notes || "");
+      setPurposeType(updatedDeal.purpose_type ?? "other");
+      setPurposeNotes(updatedDeal.purpose_notes ?? "");
       setSaveMessage({ type: "success", text: "Saved" });
       setTimeout(() => setSaveMessage(null), 3000);
       setSaving(false);
@@ -1079,6 +1189,17 @@ export default function DealPage() {
 
   function handleFileSelectButton() {
     setShowUploadModal(true);
+  }
+
+  function openUploadForChecklist(accepted: string[], suggestedDisplayName?: string) {
+    const pre = normalizeAcceptedToUploadCategory(accepted);
+    setCategory(pre);
+    setDisplayName(suggestedDisplayName ?? "");
+    setSelectedFile(null);
+    setShowUploadModal(true);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
   }
 
   function handleFileSelectInModal(event: React.ChangeEvent<HTMLInputElement>) {
@@ -2286,6 +2407,38 @@ export default function DealPage() {
             </div>
           )}
           <div style={{ marginBottom: 16 }}>
+            <label style={{ display: "block", fontSize: 14, fontWeight: 600, marginBottom: 8, color: "#374151" }}>Borrowing purpose</label>
+            <select
+              value={purposeType}
+              onChange={(e) => setPurposeType(e.target.value)}
+              style={{ width: "100%", padding: "10px 12px", fontSize: 14, border: "1px solid rgba(0,0,0,0.2)", borderRadius: 8, outline: "none", background: "white" }}
+            >
+              <option value="business_purchase">Business purchase</option>
+              <option value="startup">Start-up / new business</option>
+              <option value="refinance">Refinance / restructure</option>
+              <option value="equipment">Equipment or asset purchase</option>
+              <option value="working_capital">Working capital</option>
+              <option value="property_purchase">Property purchase (owner-occupied)</option>
+              <option value="shareholder_buyout">Shareholder buyout</option>
+              <option value="expansion">Business expansion</option>
+              <option value="other">Other</option>
+            </select>
+          </div>
+          {purposeType === "other" && (
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ display: "block", fontSize: 14, fontWeight: 600, marginBottom: 8, color: "#374151" }}>Describe the purpose</label>
+              <p style={{ fontSize: 12, color: "#6b7280", marginBottom: 6 }}>Briefly describe what the borrowing is for (1–3 sentences).</p>
+              <textarea
+                value={purposeNotes}
+                onChange={(e) => setPurposeNotes(e.target.value)}
+                placeholder="e.g. Short-term funding for inventory"
+                rows={3}
+                maxLength={500}
+                style={{ width: "100%", padding: "10px 12px", fontSize: 14, border: "1px solid rgba(0,0,0,0.2)", borderRadius: 8, outline: "none", fontFamily: "inherit", resize: "vertical" }}
+              />
+            </div>
+          )}
+          <div style={{ marginBottom: 16 }}>
             <label style={{ display: "block", fontSize: 14, fontWeight: 600, marginBottom: 8, color: "#374151" }}>Notes</label>
             <textarea
               value={notes}
@@ -2479,6 +2632,105 @@ export default function DealPage() {
       {/* Tab content: Documents */}
       {activeTab === "documents" && (
       <>
+      {/* Purpose checklist */}
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5" style={{ marginBottom: 24 }}>
+        <h2 className="text-xl font-semibold mb-0 text-gray-900">Purpose checklist</h2>
+        <p style={{ fontSize: 13, color: "#6b7280", marginTop: 4, marginBottom: 16 }}>
+          Based on borrowing purpose: {PURPOSE_LABELS[purposeType] ?? "Other"}
+        </p>
+        {(() => {
+          const items = PURPOSE_CHECKLIST[purposeType] ?? [];
+          if (items.length === 0) {
+            return (
+              <p style={{ fontSize: 13, color: "#6b7280", margin: 0 }}>
+                Select a borrowing purpose to see a tailored checklist.
+              </p>
+            );
+          }
+          const tiers: DocTier[] = ["required", "recommended", "supporting"];
+          const tierLabels: Record<DocTier, string> = { required: "Required", recommended: "Recommended", supporting: "Supporting" };
+          return (
+            <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+              {tiers.map((tier) => {
+                const tierItems = items.filter((i) => i.tier === tier);
+                if (tierItems.length === 0) return null;
+                const { uploaded, total } = tierStats(files, items, tier);
+                return (
+                  <div key={tier}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                      <span style={{ fontSize: 14, fontWeight: 600, color: "#374151" }}>{tierLabels[tier]}</span>
+                      <span
+                        style={{
+                          fontSize: 11,
+                          fontWeight: 600,
+                          padding: "2px 8px",
+                          borderRadius: 6,
+                          background: uploaded === total ? "#d1fae5" : "#f3f4f6",
+                          color: uploaded === total ? "#065f46" : "#6b7280",
+                        }}
+                      >
+                        Uploaded {uploaded}/{total}
+                      </span>
+                    </div>
+                    <ul style={{ margin: 0, paddingLeft: 20, display: "flex", flexDirection: "column", gap: 8 }}>
+                      {tierItems.map((item) => {
+                        const status = checklistStatusForItem(files, item);
+                        return (
+                          <li key={item.key} style={{ listStyle: "disc", fontSize: 14 }}>
+                            <div style={{ display: "flex", alignItems: "flex-start", gap: 8, flexWrap: "wrap" }}>
+                              <span
+                                style={{
+                                  fontSize: 11,
+                                  fontWeight: 600,
+                                  padding: "2px 6px",
+                                  borderRadius: 4,
+                                  flexShrink: 0,
+                                  background: status === "uploaded" ? "#d1fae5" : tier === "required" ? "#fee2e2" : "#f3f4f6",
+                                  color: status === "uploaded" ? "#065f46" : tier === "required" ? "#991b1b" : "#6b7280",
+                                }}
+                              >
+                                {status === "uploaded" ? "Uploaded" : "Missing"}
+                              </span>
+                              <span style={{ color: "#111827", fontWeight: 500 }}>{item.label}</span>
+                              {status === "missing" && (
+                                <button
+                                  type="button"
+                                  disabled={uploading}
+                                  onClick={() => openUploadForChecklist(item.acceptedCategories, item.label)}
+                                  style={{
+                                    marginLeft: "auto",
+                                    padding: "4px 10px",
+                                    borderRadius: 6,
+                                    border: "1px solid rgba(0,0,0,0.2)",
+                                    background: "white",
+                                    fontSize: 12,
+                                    fontWeight: 600,
+                                    cursor: uploading ? "not-allowed" : "pointer",
+                                    opacity: uploading ? 0.6 : 1,
+                                  }}
+                                >
+                                  Upload
+                                </button>
+                              )}
+                            </div>
+                            {item.help && (
+                              <p style={{ fontSize: 12, color: "#6b7280", margin: "2px 0 0 0" }}>{item.help}</p>
+                            )}
+                            <p style={{ fontSize: 11, color: "#9ca3af", margin: "2px 0 0 0" }}>
+                              Accepts: {item.acceptedCategories.map((c) => CATEGORY_LABELS[c] ?? c).join(", ")}
+                            </p>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })()}
+      </div>
+
       {/* Upload Pack Section */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
         <div className="flex justify-between items-center mb-4">
