@@ -114,6 +114,23 @@ function tierStats(files: SubmissionFileRow[], items: ChecklistItem[], tier: Doc
   return { uploaded, total };
 }
 
+function computeReadinessPct(counts: {
+  requiredTotal: number;
+  requiredUploaded: number;
+  recommendedTotal: number;
+  recommendedUploaded: number;
+  supportingTotal: number;
+  supportingUploaded: number;
+}): number {
+  const { requiredTotal, requiredUploaded, recommendedTotal, recommendedUploaded, supportingTotal, supportingUploaded } = counts;
+  if (requiredTotal === 0 && recommendedTotal === 0 && supportingTotal === 0) return 0;
+  const reqScore = requiredTotal === 0 ? 1 : requiredUploaded / requiredTotal;
+  const recScore = recommendedTotal === 0 ? 1 : recommendedUploaded / recommendedTotal;
+  const supScore = supportingTotal === 0 ? 1 : supportingUploaded / supportingTotal;
+  const weighted = reqScore * 0.6 + recScore * 0.3 + supScore * 0.1;
+  return Math.round(weighted * 100);
+}
+
 const UPLOAD_CATEGORY_PRIORITY = ["broker_app", "financials", "forecasts", "business_plan", "tax", "security", "other"] as const;
 
 function normalizeAcceptedToUploadCategory(accepted: string[]): string {
@@ -1574,9 +1591,10 @@ export default function DealPage() {
 
   return (
     <div className="space-y-8">
-      {/* Header: left = back + title + badge, right = actions + Last run */}
-      <div className="flex justify-between items-start gap-4 flex-wrap">
-        <div className="flex items-center gap-3 min-w-0 flex-1">
+      {/* Header: row 1 = back + title, row 2 = badges + actions, row 3 = Last run / errors */}
+      <div className="flex flex-col gap-3">
+        {/* Row 1: Back + rename + full title (no truncate, wraps) */}
+        <div className="flex items-center gap-3">
           <button
             onClick={() => router.push("/app/deals")}
             style={{
@@ -1604,25 +1622,52 @@ export default function DealPage() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
             </svg>
           </button>
-          <h1 className="text-3xl font-bold mb-0 flex-1 min-w-0 truncate">{deal?.name || name || "Deal Details"}</h1>
-          {(() => {
-            const active = latestFindings.filter((f) => {
-              const state = f.workflow_state ?? "open";
-              return state === "open" || state === "acknowledged";
-            });
-            const criticalActive = active.filter((f) => f.severity === "critical").length;
-            const warningsActive = active.filter((f) => f.severity === "warning").length;
-            const label = criticalActive > 0 ? "Not ready to submit" : warningsActive > 0 ? "Needs attention" : "Ready to submit";
-            const style = criticalActive > 0 ? { background: "#fee2e2", color: "#991b1b" } : warningsActive > 0 ? { background: "#fef3c7", color: "#92400e" } : { background: "#d1fae5", color: "#065f46" };
-            return (
-              <span style={{ padding: "4px 10px", borderRadius: 6, fontSize: 12, fontWeight: 600, flexShrink: 0, ...style }}>
-                {label}
-              </span>
-            );
-          })()}
+          <h1 className="text-3xl font-bold mb-0 leading-tight min-w-0">{deal?.name || name || "Deal Details"}</h1>
         </div>
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        {/* Row 2: Left = badges (flex-wrap), Right = action buttons (flex-wrap) */}
+        <div className="flex flex-wrap justify-between items-center gap-4">
+          <div className="flex flex-wrap items-center gap-2">
+            {(() => {
+              const active = latestFindings.filter((f) => {
+                const state = f.workflow_state ?? "open";
+                return state === "open" || state === "acknowledged";
+              });
+              const criticalActive = active.filter((f) => f.severity === "critical").length;
+              const warningsActive = active.filter((f) => f.severity === "warning").length;
+              const label = criticalActive > 0 ? "Not ready to submit" : warningsActive > 0 ? "Needs attention" : "Ready to submit";
+              const style = criticalActive > 0 ? { background: "#fee2e2", color: "#991b1b" } : warningsActive > 0 ? { background: "#fef3c7", color: "#92400e" } : { background: "#d1fae5", color: "#065f46" };
+              const checklistItems = PURPOSE_CHECKLIST[purposeType] ?? [];
+              const req = tierStats(files, checklistItems, "required");
+              const rec = tierStats(files, checklistItems, "recommended");
+              const sup = tierStats(files, checklistItems, "supporting");
+              const docsPct = computeReadinessPct({
+                requiredTotal: req.total,
+                requiredUploaded: req.uploaded,
+                recommendedTotal: rec.total,
+                recommendedUploaded: rec.uploaded,
+                supportingTotal: sup.total,
+                supportingUploaded: sup.uploaded,
+              });
+              const docsStyle =
+                docsPct < 60 ? { background: "#fee2e2", color: "#991b1b" } : docsPct < 85 ? { background: "#fef3c7", color: "#92400e" } : { background: "#d1fae5", color: "#065f46" };
+              return (
+                <>
+                  <span style={{ padding: "4px 10px", borderRadius: 6, fontSize: 12, fontWeight: 600, flexShrink: 0, ...style }}>
+                    {label}
+                  </span>
+                  {checklistItems.length > 0 && (
+                    <span
+                      title="Based on purpose checklist document completeness"
+                      style={{ padding: "4px 10px", borderRadius: 6, fontSize: 12, fontWeight: 600, flexShrink: 0, ...docsStyle }}
+                    >
+                      Docs: {docsPct}%
+                    </span>
+                  )}
+                </>
+              );
+            })()}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
               onClick={async () => {
@@ -1695,6 +1740,9 @@ export default function DealPage() {
               {generatingSummary ? "Generating…" : "Generate lender summary"}
             </button>
           </div>
+        </div>
+        {/* Below Row 2: Last run, runCheckError, helper – aligned right */}
+        <div className="flex flex-col items-end gap-1">
           {latestRun?.created_at && (
             <span style={{ fontSize: 12, color: "#6b7280" }}>
               Last run: {new Date(latestRun.created_at).toLocaleString()}
