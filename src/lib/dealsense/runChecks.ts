@@ -123,8 +123,8 @@ export function computeFindings(input: { files: File[]; parties: Party[] }): { f
     });
   }
 
-  // Rule 2: Missing financial statements
-  if (!inferredTags.has("financial_statements") && !inferredTags.has("financial")) {
+  // Rule 2: Missing financial statements (treat doc-id category 'financials' as present)
+  if (!inferredTags.has("financial_statements") && !inferredTags.has("financial") && !inferredTags.has("financials")) {
     findings.push({
       id: "docs_missing_financials",
       severity: hasBorrower ? "warning" : "info",

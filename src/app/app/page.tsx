@@ -65,8 +65,8 @@ export default function AppHome() {
         return;
       }
 
-      // Route to the new deal
-      router.push(`/app/deals/${deal.id}`);
+      // Route to the new deal wizard
+      router.push(`/app/deals/${deal.id}/wizard/step-1`);
     } catch (err) {
       console.error("Error creating deal (raw):", err);
       console.error("Error creating deal (details):", {

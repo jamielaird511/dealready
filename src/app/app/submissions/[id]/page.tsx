@@ -5,6 +5,8 @@ import { useParams, useRouter } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
 import { AssessmentCard } from "@/components/AssessmentCard";
 import { DeleteFileDialog } from "@/components/DeleteFileDialog";
+import { DOC_TYPES } from "@/lib/dealWizard/docMatrix";
+import type { DocTypeId } from "@/lib/dealWizard/docMatrix";
 
 type SubmissionRow = { id: string; deal_id?: string; title?: string; status?: string; created_at?: string; updated_at?: string };
 type SubmissionFileRow = {
@@ -28,6 +30,16 @@ type SubmissionFileRow = {
 type RunRow = { id: string; submission_id?: string; status?: string; score?: number; assessment_status?: string; top_fixes?: string[]; assessed_at?: string | null; created_at?: string };
 type FindingRow = { id?: string; run_id: string; title?: string | null; severity?: string | null; category?: string | null; message?: string | null; fix?: string | null; score_impact?: number | null; workflow_state?: string | null; created_at?: string | null };
 type SupabaseErrorLike = { message?: string; details?: unknown; hint?: string; code?: string };
+
+/** Legacy upload category -> wizard doc id for submission_files.category (only known legacy buckets) */
+const LEGACY_CATEGORY_TO_WIZARD_DOC_ID: Record<string, DocTypeId> = {
+  broker_app: "application_narrative",
+  financials: "financials",
+  forecasts: "forecasts",
+  security: "valuation",
+  id: "identification",
+  identification: "identification",
+};
 
 function formatCategory(cat: string | null | undefined): string {
   if (!cat) return "";
@@ -490,6 +502,18 @@ export default function SubmissionPage() {
 
       const validCategories = ["financials", "tax", "forecasts", "business_plan", "broker_app", "security", "other"];
       const safeCategory = validCategories.includes(meta.category) ? meta.category : "other";
+      const categoryForDb = LEGACY_CATEGORY_TO_WIZARD_DOC_ID[safeCategory];
+      if (categoryForDb == null) {
+        alert("This document category is not supported for upload. Please use a supported category (e.g. Financials, Forecasts, Broker application/SoP, Security, Identification).");
+        setUploading(false);
+        return;
+      }
+      const wizardDocIds = new Set(DOC_TYPES.map((d) => d.id));
+      if (!wizardDocIds.has(categoryForDb)) {
+        alert("Invalid document category. Please try again.");
+        setUploading(false);
+        return;
+      }
       const displayName = (meta.display_name || "").trim() || file.name;
 
       const insertData = {
@@ -497,7 +521,7 @@ export default function SubmissionPage() {
         storage_path: storagePath,
         original_filename: file.name,
         display_name: displayName,
-        category: safeCategory,
+        category: categoryForDb,
         mime_type: file.type,
         size_bytes: file.size
       };

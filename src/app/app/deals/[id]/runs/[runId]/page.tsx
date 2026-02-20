@@ -4,7 +4,7 @@ import { useEffect, useState, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
 
-type RunRow = { id?: string; status: string; created_at: string; updated_at?: string };
+type RunRow = { id?: string; status: string; created_at: string; updated_at?: string; submission_id?: string };
 type FindingRow = { id: string; severity: string; workflow_state?: string; title?: string; category?: string; message?: string; fix?: string };
 
 export default function RunResultsPage() {
@@ -20,15 +20,19 @@ export default function RunResultsPage() {
   const [findings, setFindings] = useState<FindingRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [processError, setProcessError] = useState<string | null>(null);
+  const [runAgainLoading, setRunAgainLoading] = useState(false);
+  const [runAgainError, setRunAgainError] = useState<string | null>(null);
   const processTriggeredRef = useRef(false);
 
   const missingRunId = !runId || runId === "undefined";
   const displayProcessError = processError ?? (missingRunId ? "Missing runId" : null);
 
   useEffect(() => {
+    if (!runId) {
+      setLoading(false);
+      return;
+    }
     async function loadRun() {
-      if (!runId) return;
-
       const supabase = supabaseBrowser();
 
       const { data, error: fetchError } = await supabase
@@ -256,6 +260,18 @@ export default function RunResultsPage() {
   const criticalCount = findings.filter(f => f.severity === "critical").length;
   const warningCount = findings.filter(f => f.severity === "warning").length;
   const infoCount = findings.filter(f => f.severity === "info").length;
+  const readinessScore = Math.max(0, 100 - (criticalCount * 20) - (warningCount * 10));
+
+  const activeFindings = findings.filter((f) => {
+    const s = f.workflow_state ?? "open";
+    return s === "open" || s === "acknowledged";
+  });
+  const fixInWizardStep = (() => {
+    const list = activeFindings.length > 0 ? activeFindings : findings;
+    if (list.some((f) => f.category === "parties" || (f.title ?? "").toLowerCase().includes("borrower"))) return 1;
+    if (list.some((f) => f.category === "documents")) return 2;
+    return 3;
+  })();
 
   // Handler to update finding workflow_state
   async function handleWorkflowStateChange(findingId: string, newWorkflowState: string) {
@@ -326,20 +342,83 @@ export default function RunResultsPage() {
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
           <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 0 }}>Run Status</h2>
-          <span
-            style={{
-              padding: "6px 12px",
-              borderRadius: 6,
-              background: statusColor.bg,
-              color: statusColor.color,
-              fontSize: 13,
-              fontWeight: 600,
-              textTransform: "capitalize",
-            }}
-          >
-            {run.status}
-          </span>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <button
+              type="button"
+              onClick={() => dealId && router.push(`/app/deals/${dealId}/wizard/step-${fixInWizardStep}`)}
+              disabled={!dealId}
+              style={{
+                padding: "6px 12px",
+                fontSize: 13,
+                fontWeight: 600,
+                borderRadius: 6,
+                border: "1px solid #64748b",
+                background: !dealId ? "#f1f5f9" : "white",
+                color: !dealId ? "#94a3b8" : "#475569",
+                cursor: dealId ? "pointer" : "not-allowed",
+              }}
+            >
+              Fix in wizard
+            </button>
+            <button
+              type="button"
+              disabled={runAgainLoading || !run.submission_id}
+              onClick={async () => {
+                if (!dealId || !run.submission_id || runAgainLoading) return;
+                setRunAgainError(null);
+                setRunAgainLoading(true);
+                try {
+                  const supabase = supabaseBrowser();
+                  const { data: newRun, error: insertErr } = await supabase
+                    .from("submission_runs")
+                    .insert({ submission_id: run.submission_id, status: "queued" })
+                    .select("id")
+                    .single();
+                  if (insertErr || !newRun?.id) {
+                    setRunAgainError(insertErr?.message ?? "Failed to create run.");
+                    return;
+                  }
+                  router.push(`/app/deals/${dealId}/runs/${newRun.id}`);
+                } catch (err) {
+                  setRunAgainError(err instanceof Error ? err.message : "Failed to run again.");
+                } finally {
+                  setRunAgainLoading(false);
+                }
+              }}
+              style={{
+                padding: "6px 12px",
+                fontSize: 13,
+                fontWeight: 600,
+                borderRadius: 6,
+                border: "1px solid #64748b",
+                background: runAgainLoading || !run.submission_id ? "#f1f5f9" : "white",
+                color: runAgainLoading || !run.submission_id ? "#94a3b8" : "#475569",
+                cursor: runAgainLoading || !run.submission_id ? "not-allowed" : "pointer",
+              }}
+            >
+              {runAgainLoading ? "Creating…" : "Run again"}
+            </button>
+            <span
+              style={{
+                padding: "6px 12px",
+                borderRadius: 6,
+                background: statusColor.bg,
+                color: statusColor.color,
+                fontSize: 13,
+                fontWeight: 600,
+                textTransform: "capitalize",
+              }}
+            >
+              {run.status}
+            </span>
+          </div>
         </div>
+        {runAgainError && (
+          <p style={{ fontSize: 13, color: "#b91c1c", marginTop: 0, marginBottom: 8 }}>{runAgainError}</p>
+        )}
+        <p style={{ fontSize: 13, color: "#64748b", marginTop: 8, marginBottom: 0 }}>
+          Readiness score: {readinessScore}/100
+        </p>
         <div style={{ fontSize: 14, color: "#6b7280" }}>
           <div>Started: {new Date(run.created_at).toLocaleString()}</div>
           {run.updated_at && run.updated_at !== run.created_at && (
@@ -454,7 +533,7 @@ export default function RunResultsPage() {
                       >
                     <div style={{ display: "flex", alignItems: "flex-start", gap: 12, justifyContent: "space-between" }}>
                       <div style={{ flex: 1 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
                           <span
                             style={{
                               padding: "4px 8px",
@@ -485,6 +564,24 @@ export default function RunResultsPage() {
                             >
                               {finding.category}
                             </span>
+                          )}
+                          {(finding.category === "parties" || (finding.title || "").toLowerCase().includes("borrower")) && (
+                            <button
+                              type="button"
+                              onClick={() => dealId && router.push(`/app/deals/${dealId}/wizard/step-1`)}
+                              style={{
+                                padding: "2px 8px",
+                                fontSize: 11,
+                                fontWeight: 500,
+                                borderRadius: 4,
+                                border: "1px solid #818cf8",
+                                background: "transparent",
+                                color: "#4f46e5",
+                                cursor: "pointer",
+                              }}
+                            >
+                              Go to Parties
+                            </button>
                           )}
                         </div>
                         {finding.message && (

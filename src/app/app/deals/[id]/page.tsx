@@ -1,10 +1,13 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import { createPortal } from "react-dom";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
 import { DeleteFileDialog } from "@/components/DeleteFileDialog";
+import { DOC_TYPES, PURPOSE_DOC_MATRIX } from "@/lib/dealWizard/docMatrix";
+import type { DocTypeId } from "@/lib/dealWizard/docMatrix";
+import type { WizardPurposeKey } from "@/lib/dealWizard/types";
 
 type SubmissionFileRow = {
   id?: string;
@@ -19,7 +22,7 @@ type SubmissionFileRow = {
   extracted_text?: string | null;
   chunk_count?: number;
 };
-type DealRow = { id?: string; name?: string; status?: string; notes?: string; purpose_type?: string; purpose_notes?: string | null };
+type DealRow = { id?: string; name?: string; status?: string; notes?: string; purpose_type?: string; purpose_notes?: string | null; wizard_state?: Record<string, unknown> | null };
 type DealPartyRaw = { id: string; deal_id?: string; roles?: string[]; role?: string | null; notes?: string | null; entities?: unknown; type?: string | null; name?: string | null };
 type DealPartyRow = { id: string; roles?: string[]; role?: string | null };
 type DealPartyNormalized = { id: string; deal_id?: string; roles?: string[]; role?: string | null; notes?: string | null; entityId?: string | null; entity_type?: string | null; display_name?: string | null; email?: string | null; phone?: string | null; type?: string | null; name?: string | null };
@@ -50,6 +53,16 @@ const PURPOSE_LABELS: Record<string, string> = {
   shareholder_buyout: "Shareholder buyout",
   expansion: "Business expansion",
   other: "Other",
+};
+
+/** Legacy upload category -> wizard doc id for submission_files.category (only known legacy buckets) */
+const LEGACY_CATEGORY_TO_WIZARD_DOC_ID: Record<string, DocTypeId> = {
+  broker_app: "application_narrative",
+  financials: "financials",
+  forecasts: "forecasts",
+  security: "valuation",
+  id: "identification",
+  identification: "identification",
 };
 
 const PURPOSE_CHECKLIST: Record<string, ChecklistItem[]> = {
@@ -572,7 +585,11 @@ function FileItem({ file, getDownloadUrl, onDelete, onRefresh }: { file: Submiss
 export default function DealPage() {
   const params = useParams();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const dealId = params.id as string;
+  const fromWizard = searchParams.get("from") === "wizard";
+  const returnTo = searchParams.get("returnTo") ?? "step-2";
+  const tabParam = searchParams.get("tab");
 
   const [loading, setLoading] = useState(true);
   const [deal, setDeal] = useState<DealRow | null>(null);
@@ -665,6 +682,23 @@ export default function DealPage() {
   const [summaryCreatedAt, setSummaryCreatedAt] = useState<string | null>(null);
 
   const [activeTab, setActiveTab] = useState<"overview" | "parties" | "documents" | "checks" | "lender">("overview");
+
+  useEffect(() => {
+    if (tabParam === "documents") setActiveTab("documents");
+  }, [tabParam]);
+
+  const wizardNextStep = useMemo(() => {
+    if (!deal?.wizard_state) return 1;
+    const pt = purposeType || deal.purpose_type || "other";
+    const PURPOSE_KEYS = Object.keys(PURPOSE_DOC_MATRIX) as WizardPurposeKey[];
+    const purposeKey: WizardPurposeKey = PURPOSE_KEYS.includes(pt as WizardPurposeKey) ? (pt as WizardPurposeKey) : pt === "refinance" ? "refinance_business" : pt === "property_purchase" ? "property_purchase_oo" : "other";
+    const ws = deal.wizard_state as Record<string, unknown>;
+    const docUploaded = (ws.docUploaded && typeof ws.docUploaded === "object" && !Array.isArray(ws.docUploaded)) ? (ws.docUploaded as Record<string, boolean>) : {};
+    const docMissing = (ws.docMissing && typeof ws.docMissing === "object" && !Array.isArray(ws.docMissing)) ? (ws.docMissing as Record<string, boolean>) : {};
+    const requiredIds = PURPOSE_DOC_MATRIX[purposeKey].required;
+    const requiredReady = requiredIds.every((id) => docUploaded[id] || docMissing[id]);
+    return requiredReady ? 3 : 2;
+  }, [deal, purposeType]);
 
   async function loadFilesWithChunkCounts(submissionId: string): Promise<SubmissionFileRow[]> {
     const supabase = supabaseBrowser();
@@ -1329,16 +1363,27 @@ export default function DealPage() {
         return;
       }
 
-      // Validate category is one of the allowed values
       const validCategories = ["financials", "tax", "forecasts", "business_plan", "broker_app", "security", "other"];
       const safeCategory = validCategories.includes(category) ? category : "other";
+      const categoryForDb = LEGACY_CATEGORY_TO_WIZARD_DOC_ID[safeCategory];
+      if (categoryForDb == null) {
+        alert("This document category is not supported for upload. Please use a supported category (e.g. Financials, Forecasts, Broker application/SoP, Security, Identification).");
+        setUploading(false);
+        return;
+      }
+      const wizardDocIds = new Set(DOC_TYPES.map((d) => d.id));
+      if (!wizardDocIds.has(categoryForDb)) {
+        alert("Invalid document category. Please try again.");
+        setUploading(false);
+        return;
+      }
 
       const insertData = {
         submission_id: submissionId,
         storage_path: storagePath,
         original_filename: selectedFile.name,
         display_name: displayName.trim() || selectedFile.name,
-        category: safeCategory,
+        category: categoryForDb,
         mime_type: selectedFile.type,
         size_bytes: selectedFile.size
       };
@@ -1739,6 +1784,41 @@ export default function DealPage() {
             >
               {generatingSummary ? "Generating…" : "Generate lender summary"}
             </button>
+            <button
+              type="button"
+              onClick={() => dealId && router.push(`/app/deals/${dealId}/wizard/step-${wizardNextStep}`)}
+              disabled={!dealId}
+              style={{
+                padding: "8px 16px",
+                fontSize: 14,
+                fontWeight: 600,
+                borderRadius: 8,
+                border: "1px solid #4f46e5",
+                background: "#4f46e5",
+                color: "white",
+                cursor: dealId ? "pointer" : "not-allowed",
+                opacity: dealId ? 1 : 0.7,
+              }}
+            >
+              Continue wizard
+            </button>
+            <button
+              type="button"
+              onClick={() => dealId && router.push(`/app/deals/${dealId}/wizard/step-1`)}
+              disabled={!dealId}
+              style={{
+                padding: "8px 16px",
+                fontSize: 14,
+                fontWeight: 600,
+                borderRadius: 8,
+                border: "1px solid #64748b",
+                background: "white",
+                color: "#475569",
+                cursor: dealId ? "pointer" : "not-allowed",
+              }}
+            >
+              Open wizard
+            </button>
           </div>
         </div>
         {/* Below Row 2: Last run, runCheckError, helper – aligned right */}
@@ -1756,6 +1836,55 @@ export default function DealPage() {
           )}
         </div>
       </div>
+
+      {fromWizard && (
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            alignItems: "center",
+            gap: 12,
+            padding: "12px 16px",
+            background: "#eef2ff",
+            border: "1px solid #c7d2fe",
+            borderRadius: 8,
+          }}
+        >
+          <span style={{ fontSize: 14, fontWeight: 600, color: "#3730a3" }}>
+            Uploading documents for the DealReady wizard.
+          </span>
+          <a
+            href={`/app/deals/${dealId}/wizard/${returnTo}`}
+            style={{
+              padding: "8px 16px",
+              fontSize: 14,
+              fontWeight: 600,
+              borderRadius: 8,
+              background: "#4f46e5",
+              color: "white",
+              textDecoration: "none",
+            }}
+          >
+            Back to Wizard
+          </a>
+          <button
+            type="button"
+            onClick={() => router.push(`/app/deals/${dealId}`)}
+            style={{
+              padding: "8px 16px",
+              fontSize: 14,
+              fontWeight: 500,
+              borderRadius: 8,
+              border: "1px solid #6366f1",
+              background: "white",
+              color: "#4f46e5",
+              cursor: "pointer",
+            }}
+          >
+            Continue without wizard
+          </button>
+        </div>
+      )}
 
       {/* Tab bar */}
       <div style={{ display: "flex", gap: 24, borderBottom: "2px solid #e5e7eb", flexWrap: "wrap" }}>
@@ -2368,7 +2497,16 @@ export default function DealPage() {
           )}
 
           {!latestRun ? (
-            <p style={{ fontSize: 14, color: "#6b7280", marginBottom: 0 }}>No DealSense run yet.</p>
+            <>
+              <p style={{ fontSize: 14, color: "#6b7280", marginBottom: 12 }}>No DealSense run yet.</p>
+              <button
+                type="button"
+                onClick={() => dealId && router.push(`/app/deals/${dealId}/wizard/step-2`)}
+                className="text-sm text-indigo-600 hover:underline cursor-pointer"
+              >
+                Edit documents in wizard
+              </button>
+            </>
           ) : (
             <>
               <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12, marginBottom: 16 }}>
@@ -2412,7 +2550,14 @@ export default function DealPage() {
                   </>
                 )}
               </div>
-              <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  onClick={() => dealId && router.push(`/app/deals/${dealId}/wizard/step-2`)}
+                  className="text-sm text-indigo-600 hover:underline cursor-pointer"
+                >
+                  Edit documents in wizard
+                </button>
                 {activeSubmissionId ? (
                   <button
                     onClick={() => router.push(`/app/submissions/${activeSubmissionId}`)}

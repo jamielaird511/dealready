@@ -91,7 +91,8 @@ export default function DealsPage() {
         .from("submission_run_findings")
         .select("severity, status, workflow_state")
         .eq("run_id", latestRun.id)
-        .order("created_at", { ascending: false });
+        .order("created_at", { ascending: false })
+        .limit(500);
 
       if (findingsError) {
         console.error("Findings error raw", findingsError);
@@ -160,7 +161,16 @@ export default function DealsPage() {
       setDeals(data || []);
       setLoading(false);
       if (data && data.length > 0) {
-        data.forEach((deal) => loadDealSenseData(deal.id));
+        const concurrency = 3;
+        const ids = data.map((d) => d.id).filter((id): id is string => Boolean(id));
+        let index = 0;
+        async function runNext(): Promise<void> {
+          if (index >= ids.length) return;
+          const dealId = ids[index++];
+          await loadDealSenseData(dealId);
+          await runNext();
+        }
+        Array.from({ length: Math.min(concurrency, ids.length) }, () => runNext());
       }
     }
     loadDeals();
