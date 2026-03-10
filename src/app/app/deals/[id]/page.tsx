@@ -1689,18 +1689,21 @@ export default function DealPage() {
                       label: getDocLabel(id),
                       tier: "required" as DocTier,
                       acceptedCategories: [id],
+                      help: undefined,
                     })),
                     ...config.recommended.map((id) => ({
                       key: id,
                       label: getDocLabel(id),
                       tier: "recommended" as DocTier,
                       acceptedCategories: [id],
+                      help: undefined,
                     })),
                     ...config.supporting.map((id) => ({
                       key: id,
                       label: getDocLabel(id),
                       tier: "supporting" as DocTier,
                       acceptedCategories: [id],
+                      help: undefined,
                     })),
                   ]
                 : [];
@@ -2862,18 +2865,21 @@ export default function DealPage() {
                   label: getDocLabel(id),
                   tier: "required" as DocTier,
                   acceptedCategories: [id],
+                  help: undefined,
                 })),
                 ...config.recommended.map((id) => ({
                   key: id,
                   label: getDocLabel(id),
                   tier: "recommended" as DocTier,
                   acceptedCategories: [id],
+                  help: undefined,
                 })),
                 ...config.supporting.map((id) => ({
                   key: id,
                   label: getDocLabel(id),
                   tier: "supporting" as DocTier,
                   acceptedCategories: [id],
+                  help: undefined,
                 })),
               ]
             : [];
