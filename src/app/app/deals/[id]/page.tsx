@@ -1418,14 +1418,60 @@ export default function DealPage() {
       }
 
       if (insertedFile?.id) {
-        console.log("[Deal upload] Inserted file id:", insertedFile.id, "- extraction triggered");
-        const extractRes = await fetch("/api/submission-files/extract", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ fileId: insertedFile.id }),
-        });
-        const extractJson = await extractRes.json().catch(() => ({}));
-        if (extractJson?.ok || extractJson?.alreadyExtracted) {
+        console.log("[Deal upload] Inserted file id:", insertedFile.id);
+
+        try {
+          const extractRes = await fetch("/api/submission-files/extract", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ fileId: insertedFile.id }),
+            credentials: "include",
+          });
+
+          const extractText = await extractRes.text().catch(() => "");
+          let extractJson: any = {};
+          try {
+            extractJson = extractText ? JSON.parse(extractText) : {};
+          } catch {
+            extractJson = {};
+          }
+
+          if (!extractRes.ok || (!extractJson?.ok && !extractJson?.alreadyExtracted)) {
+            console.error("[Deal upload] Extraction failed:", {
+              fileId: insertedFile.id,
+              status: extractRes.status,
+              body: extractText.slice(0, 500),
+            });
+            alert(extractJson?.error ?? "File uploaded but extraction failed. See console for details.");
+            await refreshFiles();
+          } else {
+            const classifyRes = await fetch(`/api/submission-files/${insertedFile.id}/classify`, {
+              method: "POST",
+              credentials: "include",
+            });
+
+            const classifyText = await classifyRes.text().catch(() => "");
+            let classifyJson: any = {};
+            try {
+              classifyJson = classifyText ? JSON.parse(classifyText) : {};
+            } catch {
+              classifyJson = {};
+            }
+
+            if (!classifyRes.ok || !classifyJson?.ok) {
+              console.error("[Deal upload] Classification failed:", {
+                fileId: insertedFile.id,
+                status: classifyRes.status,
+                body: classifyText.slice(0, 500),
+              });
+              alert(classifyJson?.error ?? "File extracted but classification failed. See console for details.");
+            }
+
+            await refreshFiles();
+          }
+        } catch (err) {
+          console.error("[Deal upload] Extract/classify request failed:", err);
+          alert("File uploaded but processing failed. See console for details.");
           await refreshFiles();
         }
       }

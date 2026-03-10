@@ -553,11 +553,43 @@ export default function SubmissionPage() {
       }
 
       if (insertedFile?.id) {
-        fetch("/api/submission-files/extract", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ fileId: insertedFile.id }),
-        }).catch(() => {});
+        try {
+          const extractRes = await fetch("/api/submission-files/extract", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ fileId: insertedFile.id }),
+            credentials: "include",
+          });
+          if (!extractRes.ok) {
+            const text = await extractRes.text().catch(() => "");
+            console.error("Extraction failed for file:", insertedFile.id, {
+              status: extractRes.status,
+              body: text.slice(0, 500),
+            });
+            alert("File uploaded but text extraction failed. See console for details.");
+          } else {
+            try {
+              const classifyRes = await fetch(`/api/submission-files/${insertedFile.id}/classify`, {
+                method: "POST",
+                credentials: "include",
+              });
+              if (!classifyRes.ok) {
+                const text = await classifyRes.text().catch(() => "");
+                console.error("Classification failed for file:", insertedFile.id, {
+                  status: classifyRes.status,
+                  body: text.slice(0, 500),
+                });
+                alert("File extracted but classification failed. See console for details.");
+              }
+            } catch (classErr) {
+              console.error("Error during classification request:", classErr);
+              alert("File extracted but classification request failed. See console for details.");
+            }
+          }
+        } catch (extractErr) {
+          console.error("Error during extraction request:", extractErr);
+          alert("File uploaded but extraction request failed. See console for details.");
+        }
       }
 
       const { data: refreshedFiles, error: refreshError } = await supabase

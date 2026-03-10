@@ -362,7 +362,7 @@ export default function WizardStep2Page() {
         setUploading(false);
         return;
       }
-      const { error: insertErr } = await supabase
+      const { data: insertedFile, error: insertErr } = await supabase
         .from("submission_files")
         .insert({
           submission_id: submissionId,
@@ -372,13 +372,74 @@ export default function WizardStep2Page() {
           category,
           mime_type: uploadFile.type,
           size_bytes: uploadFile.size,
-        });
+        })
+        .select("id")
+        .single();
       if (insertErr) {
         alert(`Error saving file record: ${insertErr.message || "Please try again."}`);
         setUploading(false);
         return;
       }
-      setSyncTrigger((t) => t + 1);
+      if (insertedFile?.id) {
+        try {
+          const extractRes = await fetch("/api/submission-files/extract", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ fileId: insertedFile.id }),
+            credentials: "include",
+          });
+
+          const extractText = await extractRes.text().catch(() => "");
+          let extractJson: any = {};
+          try {
+            extractJson = extractText ? JSON.parse(extractText) : {};
+          } catch {
+            extractJson = {};
+          }
+
+          if (!extractRes.ok || (!extractJson?.ok && !extractJson?.alreadyExtracted)) {
+            console.error("[Wizard upload] Extraction failed:", {
+              fileId: insertedFile.id,
+              status: extractRes.status,
+              body: extractText.slice(0, 500),
+            });
+            alert(extractJson?.error ?? "File uploaded but extraction failed. See console for details.");
+            setSyncTrigger((t) => t + 1);
+          } else {
+            try {
+              const classifyRes = await fetch(`/api/submission-files/${insertedFile.id}/classify`, {
+                method: "POST",
+                credentials: "include",
+              });
+
+              const classifyText = await classifyRes.text().catch(() => "");
+              let classifyJson: any = {};
+              try {
+                classifyJson = classifyText ? JSON.parse(classifyText) : {};
+              } catch {
+                classifyJson = {};
+              }
+
+              if (!classifyRes.ok || !classifyJson?.ok) {
+                console.error("[Wizard upload] Classification failed:", {
+                  fileId: insertedFile.id,
+                  status: classifyRes.status,
+                  body: classifyText.slice(0, 500),
+                });
+                alert(classifyJson?.error ?? "File extracted but classification failed. See console for details.");
+              }
+            } finally {
+              setSyncTrigger((t) => t + 1);
+            }
+          }
+        } catch (err) {
+          console.error("[Wizard upload] Extract/classify request failed:", err);
+          alert("File uploaded but processing failed. See console for details.");
+          setSyncTrigger((t) => t + 1);
+        }
+      } else {
+        setSyncTrigger((t) => t + 1);
+      }
       setUploadModalDocId(null);
       setUploadFile(null);
       setReplaceExisting(false);
