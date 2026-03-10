@@ -4,6 +4,8 @@ import { writeSubmissionFileChunks } from "@/lib/chunking";
 // @ts-expect-error - pdf-parse has no type declarations
 import pdfParse from "pdf-parse";
 
+const MIN_TEXT_LENGTH = 200;
+
 function isPdf(mimeType: string | null, storagePath: string): boolean {
   return (
     mimeType === "application/pdf" ||
@@ -16,6 +18,47 @@ async function toBufferAsync(data: Blob | ArrayBuffer | Buffer): Promise<Buffer>
   if (data instanceof ArrayBuffer) return Buffer.from(data);
   const ab = await (data as Blob).arrayBuffer();
   return Buffer.from(ab);
+}
+
+async function runOcrFallback(buffer: Buffer, fileId: string): Promise<string> {
+  const ocrUrl = process.env.OCR_FALLBACK_URL;
+  if (!ocrUrl) {
+    console.log("[submission-files/extract] OCR config missing (OCR_FALLBACK_URL not set); skipping OCR for file:", fileId);
+    return "";
+  }
+
+  try {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/pdf",
+    };
+    const apiKey = process.env.OCR_FALLBACK_API_KEY;
+    if (apiKey) {
+      headers.Authorization = `Bearer ${apiKey}`;
+    }
+
+    const res = await fetch(ocrUrl, {
+      method: "POST",
+      headers,
+      body: new Uint8Array(buffer),
+    });
+
+    const text = await res.text().catch(() => "");
+    let json: any = {};
+    try {
+      json = text ? JSON.parse(text) : {};
+    } catch {
+      json = {};
+    }
+    const ocrText =
+      typeof json?.text === "string"
+        ? json.text
+        : "";
+
+    return (ocrText ?? "").trim();
+  } catch (err) {
+    console.error("[submission-files/extract] OCR request failed for file:", fileId, err);
+    return "";
+  }
 }
 
 export async function POST(request: Request) {
@@ -94,12 +137,48 @@ export async function POST(request: Request) {
     const parsed = await pdfParse(buffer);
     const extractedText = (parsed?.text ?? "").trim();
 
+    let finalText = extractedText;
+
+    if (extractedText.length >= MIN_TEXT_LENGTH) {
+      console.log("[submission-files/extract] text parse succeeded", {
+        fileId,
+        length: extractedText.length,
+      });
+    } else {
+      console.log("[submission-files/extract] text parse insufficient, trying OCR", {
+        fileId,
+        length: extractedText.length,
+      });
+      const ocrText = await runOcrFallback(buffer, fileId);
+      if (ocrText.length >= MIN_TEXT_LENGTH) {
+        finalText = ocrText;
+        console.log("[submission-files/extract] OCR succeeded", {
+          fileId,
+          length: finalText.length,
+        });
+      } else {
+        console.log("[submission-files/extract] OCR failed / no extractable text", {
+          fileId,
+          parseLength: extractedText.length,
+          ocrLength: ocrText.length,
+        });
+        await supabase
+          .from("submission_files")
+          .update({
+            extraction_status: "failed",
+            extraction_error: "No extractable text found in PDF",
+          })
+          .eq("id", fileId);
+        return NextResponse.json({ ok: false, error: "No extractable text found in PDF" }, { status: 500 });
+      }
+    }
+
     // submission_files has no extracted_text_len column; do not add it to the update
     await supabase
       .from("submission_files")
       .update({
         extraction_status: "succeeded",
-        extracted_text: extractedText,
+        extracted_text: finalText,
         extracted_at: new Date().toISOString(),
         extraction_error: null,
       })
@@ -109,7 +188,7 @@ export async function POST(request: Request) {
       await writeSubmissionFileChunks({
         supabaseAdmin: supabase,
         submissionFileId: fileId,
-        extractedText,
+        extractedText: finalText,
         force: true,
       });
     } catch (chunkErr) {
