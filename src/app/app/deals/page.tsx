@@ -6,28 +6,13 @@ import Link from "next/link";
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
 
 type DealRow = { id: string; name?: string; status?: string; created_at?: string; updated_at?: string };
-type LatestRunRow = { id: string; created_at: string; assessed_at?: string | null };
-type Readiness = "not_ready" | "minor_issues" | "ready" | "no_run";
-type DealSenseRow = {
-  latestSubmissionId: string | null;
-  latestRun: LatestRunRow | null;
-  criticalCount: number;
-  warningCount: number;
-  activeCount: number;
-  readiness: Readiness;
-  loading: boolean;
-  error: string | null;
-};
 
-const initialDealSense: DealSenseRow = {
-  latestSubmissionId: null,
-  latestRun: null,
-  criticalCount: 0,
-  warningCount: 0,
-  activeCount: 0,
-  readiness: "no_run",
-  loading: false,
-  error: null,
+/** Row from deal_latest_run view: latest run per deal with snapshot. */
+type DealLatestRunRow = {
+  deal_id: string;
+  run_id: string | null;
+  run_created_at: string | null;
+  doc_completeness_snapshot: { completenessPct?: number } | null;
 };
 
 export default function DealsPage() {
@@ -35,108 +20,7 @@ export default function DealsPage() {
   const [loading, setLoading] = useState(true);
   const [deals, setDeals] = useState<DealRow[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [dealSenseData, setDealSenseData] = useState<Record<string, DealSenseRow>>({});
-
-  async function loadDealSenseData(dealId: string) {
-    const supabase = supabaseBrowser();
-    setDealSenseData((prev) => ({
-      ...prev,
-      [dealId]: { ...initialDealSense, loading: true },
-    }));
-
-    try {
-      const { data: submissions, error: subError } = await supabase
-        .from("submissions")
-        .select("id")
-        .eq("deal_id", dealId)
-        .order("created_at", { ascending: false })
-        .limit(1);
-
-      if (subError || !submissions || submissions.length === 0) {
-        setDealSenseData((prev) => ({
-          ...prev,
-          [dealId]: { ...initialDealSense, loading: false },
-        }));
-        return;
-      }
-
-      const submissionId = submissions[0].id;
-
-      const { data: runs, error: runsError } = await supabase
-        .from("submission_runs")
-        .select("*")
-        .eq("submission_id", submissionId)
-        .order("created_at", { ascending: false })
-        .limit(1);
-
-      if (runsError || !runs || runs.length === 0) {
-        setDealSenseData((prev) => ({
-          ...prev,
-          [dealId]: { ...initialDealSense, latestSubmissionId: submissionId, loading: false },
-        }));
-        return;
-      }
-
-      const latestRun = runs[0] as LatestRunRow;
-
-      if (!latestRun?.id) {
-        setDealSenseData((prev) => ({
-          ...prev,
-          [dealId]: { ...initialDealSense, latestSubmissionId: submissionId, latestRun, loading: false },
-        }));
-        return;
-      }
-
-      const { data: findings, error: findingsError } = await supabase
-        .from("submission_run_findings")
-        .select("severity, status, workflow_state")
-        .eq("run_id", latestRun.id)
-        .order("created_at", { ascending: false })
-        .limit(500);
-
-      if (findingsError) {
-        console.error("Findings error raw", findingsError);
-        console.error("Findings error context", { dealId, runId: latestRun?.id, submissionId });
-        console.error("Findings error json", JSON.stringify(findingsError));
-        setDealSenseData((prev) => ({
-          ...prev,
-          [dealId]: { ...initialDealSense, latestSubmissionId: submissionId, latestRun, loading: false, error: "Failed to load findings" },
-        }));
-        return;
-      }
-
-      const activeFindings = (findings || []).filter((f: { status?: string; workflow_state?: string }) => {
-        const status = f.status ?? "";
-        const state = f.workflow_state ?? "open";
-        return status === "new" || state === "open" || state === "acknowledged";
-      });
-      const criticalCount = activeFindings.filter((f: { severity?: string }) => f.severity === "critical").length;
-      const warningCount = activeFindings.filter((f: { severity?: string }) => f.severity === "warning").length;
-      const activeCount = activeFindings.length;
-      const readiness: Readiness =
-        criticalCount > 0 ? "not_ready" : warningCount > 0 ? "minor_issues" : "ready";
-
-      setDealSenseData((prev) => ({
-        ...prev,
-        [dealId]: {
-          latestSubmissionId: submissionId,
-          latestRun,
-          criticalCount,
-          warningCount,
-          activeCount,
-          readiness,
-          loading: false,
-          error: null,
-        },
-      }));
-    } catch (err) {
-      console.error("Error loading DealSense data for deal:", dealId, err);
-      setDealSenseData((prev) => ({
-        ...prev,
-        [dealId]: { ...initialDealSense, loading: false, error: "Error loading DealSense data" },
-      }));
-    }
-  }
+  const [latestRunByDeal, setLatestRunByDeal] = useState<Record<string, DealLatestRunRow>>({});
 
   useEffect(() => {
     async function loadDeals() {
@@ -160,17 +44,19 @@ export default function DealsPage() {
       }
       setDeals(data || []);
       setLoading(false);
-      if (data && data.length > 0) {
-        const concurrency = 3;
-        const ids = data.map((d) => d.id).filter((id): id is string => Boolean(id));
-        let index = 0;
-        async function runNext(): Promise<void> {
-          if (index >= ids.length) return;
-          const dealId = ids[index++];
-          await loadDealSenseData(dealId);
-          await runNext();
+
+      const ids = (data || []).map((d) => d.id).filter((id): id is string => Boolean(id));
+      if (ids.length === 0) return;
+      const { data: latestRuns, error: runsError } = await supabase
+        .from("deal_latest_run")
+        .select("deal_id, run_id, run_created_at, doc_completeness_snapshot")
+        .in("deal_id", ids);
+      if (!runsError && latestRuns) {
+        const byDeal: Record<string, DealLatestRunRow> = {};
+        for (const row of latestRuns as DealLatestRunRow[]) {
+          byDeal[row.deal_id] = row;
         }
-        Array.from({ length: Math.min(concurrency, ids.length) }, () => runNext());
+        setLatestRunByDeal(byDeal);
       }
     }
     loadDeals();
@@ -244,130 +130,76 @@ export default function DealsPage() {
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-slate-200">
-                {(() => {
-                  const readinessRank = (r: Readiness) => ({ not_ready: 0, minor_issues: 1, ready: 2, no_run: 3 }[r] ?? 3);
-                  const sortedDeals = [...deals].sort((a, b) => {
-                    const dsA = dealSenseData[a.id];
-                    const dsB = dealSenseData[b.id];
-                    const rankA = dsA ? readinessRank(dsA.readiness) : 3;
-                    const rankB = dsB ? readinessRank(dsB.readiness) : 3;
-                    if (rankA !== rankB) return rankA - rankB;
-                    const timeA = dsA?.latestRun ? new Date(dsA.latestRun.assessed_at ?? dsA.latestRun.created_at).getTime() : 0;
-                    const timeB = dsB?.latestRun ? new Date(dsB.latestRun.assessed_at ?? dsB.latestRun.created_at).getTime() : 0;
-                    return timeB - timeA;
-                  });
-                  return sortedDeals.map((deal) => (
-                  <tr
-                    key={deal.id}
-                    onClick={() => router.push(`/app/deals/${deal.id}`)}
-                    className="hover:bg-slate-50 cursor-pointer transition-colors"
-                  >
-                    <td className="px-6 py-3 text-sm font-medium text-gray-900">
-                      {deal.name || "Unnamed Deal"}
-                    </td>
-                    <td className="px-6 py-3 text-sm text-gray-600">
-                      {deal.status || "—"}
-                    </td>
-                    <td className="px-6 py-3 text-sm text-gray-600">
-                      {deal.created_at
-                        ? new Date(deal.created_at).toLocaleDateString()
-                        : "—"}
-                    </td>
-                    <td className="px-6 py-3 text-sm text-gray-600">
-                      {deal.updated_at
-                        ? new Date(deal.updated_at).toLocaleDateString()
-                        : "—"}
-                    </td>
-                    <td className="px-6 py-3" onClick={(e) => e.stopPropagation()}>
-                      {(() => {
-                        const dsData = dealSenseData[deal.id];
-                        if (!dsData || dsData.loading) {
-                          return <span className="text-sm text-gray-400">Loading...</span>;
-                        }
-                        if (dsData.error) {
-                          return <span className="text-sm text-red-500">{dsData.error}</span>;
-                        }
-                        if (!dsData.latestRun) {
-                          const hasSubmission = Boolean(dsData.latestSubmissionId);
-                          return (
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <span
-                                className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-slate-100 text-slate-600"
-                              >
-                                No run
-                              </span>
-                              {hasSubmission && (
-                                <button
-                                  type="button"
-                                  className="inline-flex items-center px-2 py-1 rounded-md text-xs font-semibold bg-green-600 text-white hover:bg-green-700 transition-colors cursor-pointer"
-                                  onClick={async (e) => {
-                                    e.stopPropagation();
-                                    if (!dsData.latestSubmissionId) return;
-                                    try {
-                                      const res = await fetch(`/api/submissions/${dsData.latestSubmissionId}/run`, { method: "POST" });
-                                      const json = await res.json().catch(() => ({}));
-                                      if (json?.ok) {
-                                        loadDealSenseData(deal.id);
-                                      } else {
-                                        alert(json?.error ?? "Run assessment failed");
-                                      }
-                                    } catch (err) {
-                                      console.error("Run assessment failed:", err);
-                                      alert(err instanceof Error ? err.message : "Run assessment failed");
-                                    }
-                                  }}
-                                >
-                                  Run assessment
-                                </button>
+                {deals.map((deal) => {
+                  const latest = latestRunByDeal[deal.id];
+                  const runId = latest?.run_id ?? null;
+                  const snapshot = latest?.doc_completeness_snapshot;
+                  const pct = snapshot && typeof snapshot.completenessPct === "number" ? snapshot.completenessPct : null;
+                  const runCreatedAt = latest?.run_created_at ?? null;
+                  const href = runId
+                    ? `/app/deals/${deal.id}/runs/${runId}`
+                    : `/app/deals/${deal.id}/wizard/step-4`;
+                  const runDate = runCreatedAt ? new Date(runCreatedAt) : null;
+                  const now = new Date();
+                  const diffMs = runDate ? now.getTime() - runDate.getTime() : 0;
+                  const diffMins = Math.floor(diffMs / 60000);
+                  const diffHours = Math.floor(diffMs / 3600000);
+                  const diffDays = Math.floor(diffMs / 86400000);
+                  const updatedLabel = runDate
+                    ? diffMins < 1
+                      ? "Just now"
+                      : diffMins < 60
+                        ? `${diffMins}m ago`
+                        : diffHours < 24
+                          ? `${diffHours}h ago`
+                          : diffDays < 7
+                            ? `${diffDays}d ago`
+                            : runDate.toLocaleDateString()
+                    : null;
+
+                  return (
+                    <tr
+                      key={deal.id}
+                      onClick={() => router.push(`/app/deals/${deal.id}`)}
+                      className="hover:bg-slate-50 cursor-pointer transition-colors"
+                    >
+                      <td className="px-6 py-3 text-sm font-medium text-gray-900">
+                        {deal.name || "Unnamed Deal"}
+                      </td>
+                      <td className="px-6 py-3 text-sm text-gray-600">
+                        {deal.status || "—"}
+                      </td>
+                      <td className="px-6 py-3 text-sm text-gray-600">
+                        {deal.created_at
+                          ? new Date(deal.created_at).toLocaleDateString()
+                          : "—"}
+                      </td>
+                      <td className="px-6 py-3 text-sm text-gray-600">
+                        {deal.updated_at
+                          ? new Date(deal.updated_at).toLocaleDateString()
+                          : "—"}
+                      </td>
+                      <td className="px-6 py-3" onClick={(e) => e.stopPropagation()}>
+                        <Link
+                          href={href}
+                          className="block rounded-md p-2 -m-2 hover:bg-gray-50 transition-colors cursor-pointer"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {pct != null ? (
+                            <>
+                              <span className="text-sm font-medium text-gray-900">{pct}%</span>
+                              {updatedLabel && (
+                                <div className="text-xs text-gray-500 mt-0.5">Updated {updatedLabel}</div>
                               )}
-                            </div>
-                          );
-                        }
-                        const assessedAt = dsData.latestRun.assessed_at ?? dsData.latestRun.created_at;
-                        const runDate = new Date(assessedAt);
-                        const now = new Date();
-                        const diffMs = now.getTime() - runDate.getTime();
-                        const diffMins = Math.floor(diffMs / 60000);
-                        const diffHours = Math.floor(diffMs / 3600000);
-                        const diffDays = Math.floor(diffMs / 86400000);
-                        const relativeTime =
-                          diffMins < 1 ? "Just now"
-                            : diffMins < 60 ? `${diffMins}m ago`
-                            : diffHours < 24 ? `${diffHours}h ago`
-                            : diffDays < 7 ? `${diffDays}d ago`
-                            : runDate.toLocaleDateString();
-
-                        const readinessLabel = { not_ready: "Not ready", minor_issues: "Minor issues", ready: "Ready", no_run: "No run" }[dsData.readiness];
-                        const readinessClass =
-                          dsData.readiness === "not_ready" ? "bg-red-100 text-red-800"
-                            : dsData.readiness === "minor_issues" ? "bg-amber-100 text-amber-800"
-                            : dsData.readiness === "ready" ? "bg-green-100 text-green-800"
-                            : "bg-slate-100 text-slate-600";
-
-                        return (
-                          <Link
-                            href={`/app/deals/${deal.id}/runs/${dsData.latestRun.id}`}
-                            className="block rounded-md p-2 -m-2 hover:bg-gray-50 transition-colors cursor-pointer"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ${readinessClass}`}>
-                                {readinessLabel}
-                              </span>
-                              <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-slate-100 text-slate-600">
-                                C: {dsData.criticalCount} W: {dsData.warningCount}
-                              </span>
-                            </div>
-                            <div className="text-sm text-gray-500 mt-1.5">
-                              Assessed: {relativeTime}
-                            </div>
-                          </Link>
-                        );
-                      })()}
-                    </td>
-                  </tr>
-                  ));
-                })()}
+                            </>
+                          ) : (
+                            <span className="text-sm text-gray-500">—</span>
+                          )}
+                        </Link>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

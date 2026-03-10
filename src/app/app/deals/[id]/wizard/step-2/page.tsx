@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { useWizard } from "@/lib/dealWizard/wizardContext";
 import { DOC_TYPES, PURPOSE_DOC_MATRIX, WIZARD_PURPOSE_LABELS, getDocLabel, WIZARD_DOC_ID_TO_UPLOAD_CATEGORY } from "@/lib/dealWizard/docMatrix";
 import type { DocTypeId } from "@/lib/dealWizard/docMatrix";
+import { deriveDocStatus, type DocStatus } from "@/lib/dealWizard/docStatus";
 import type { DocTier, TaxPositionOption } from "@/lib/dealWizard/types";
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
 
@@ -31,18 +32,29 @@ const LEGACY_CATEGORY_TO_DOC_ID: Record<string, DocTypeId> = {
 export default function WizardStep2Page() {
   const routeParams = useParams();
   const dealId = typeof routeParams?.id === "string" ? routeParams.id : Array.isArray(routeParams?.id) ? routeParams.id[0] : "";
-  const { state, setDocUploaded, setTaxPosition, setTaxExplanation } = useWizard();
+  const { state, setDocUploaded, setDocMissing, setTaxPosition, setTaxExplanation } = useWizard();
   const config = PURPOSE_DOC_MATRIX[state.purposeKey];
   const docsByTier: DocTier[] = ["required", "recommended", "supporting"];
 
+  const [fileCountByDoc, setFileCountByDoc] = useState<Record<string, number>>({});
+  const [overrides, setOverrides] = useState<Record<string, { status: "pending" | "not_required"; reason?: string | null }>>({});
+  const [overrideModalDocId, setOverrideModalDocId] = useState<DocTypeId | null>(null);
+  const [overrideModalStatus, setOverrideModalStatus] = useState<"pending" | "not_required">("pending");
+  const [overrideModalReason, setOverrideModalReason] = useState("");
+  const [savingOverride, setSavingOverride] = useState(false);
+
   const requiredIds = config.required;
-  const missingRequired = requiredIds.filter((id) => !state.docUploaded[id]);
+  const docStatus = (id: DocTypeId): DocStatus =>
+    deriveDocStatus(fileCountByDoc[id] ?? 0, overrides[id] ?? null);
+  const missingRequired = requiredIds.filter(
+    (id) => (() => { const s = docStatus(id); return s !== "uploaded" && s !== "not_required"; })()
+  );
   const showTaxSection = config.taxPositionApplicable;
 
   const dealDocumentsUrl = `/app/deals/${dealId}?tab=documents&from=wizard&returnTo=step-2`;
 
-  const docUploadedRef = useRef(state.docUploaded);
-  docUploadedRef.current = state.docUploaded;
+  const [filesByDocId, setFilesByDocId] = useState<Record<string, { id: string; filename: string; uploaded_at: string; storage_path?: string | null }[]>>({});
+  const [expandedDocIds, setExpandedDocIds] = useState<Set<string>>(new Set());
   const [syncingUploads, setSyncingUploads] = useState(false);
   const [uploadModalDocId, setUploadModalDocId] = useState<DocTypeId | null>(null);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
@@ -53,159 +65,193 @@ export default function WizardStep2Page() {
   const [convertError, setConvertError] = useState<string | null>(null);
   const [converting, setConverting] = useState(false);
   const [syncTrigger, setSyncTrigger] = useState(0);
+  const [removingFileId, setRemovingFileId] = useState<string | null>(null);
+  const [replaceExisting, setReplaceExisting] = useState(false);
 
   useEffect(() => {
     if (!dealId) return;
     let cancelled = false;
-    const config = PURPOSE_DOC_MATRIX[state.purposeKey];
-    const docIdsInPurpose = [...config.required, ...config.recommended, ...config.supporting];
+    const cfg = PURPOSE_DOC_MATRIX[state.purposeKey];
+    const docIdsInPurpose = [...cfg.required, ...cfg.recommended, ...cfg.supporting];
     setSyncingUploads(true);
     const supabase = supabaseBrowser();
-    console.debug("[step2 sync] dealId", dealId);
-    supabase
-      .from("submissions")
-      .select("id")
-      .eq("deal_id", dealId)
-      .order("created_at", { ascending: false })
-      .order("id", { ascending: false })
-      .limit(5)
-      .then(({ data: submissions }) => {
-        if (cancelled) return;
-        const list = (submissions || []) as { id: string }[];
-        console.debug("[step2 sync] submissions picked", list.length, list.map((s) => s.id));
-        if (list.length === 0) {
-          setSyncingUploads(false);
-          setLegacyFiles([]);
-          setSubmissionIdWithLegacy(null);
-          return;
-        }
-        let index = 0;
-        function tryNext(): Promise<void> {
-          if (cancelled) return Promise.resolve();
-          if (index >= list.length) {
-            setSyncingUploads(false);
-            setLegacyFiles([]);
-            setSubmissionIdWithLegacy(null);
-            return Promise.resolve();
-          }
-          const submissionId = list[index].id;
-          index += 1;
-          return Promise.resolve(
-            supabase
-              .from("submission_files")
-              .select("id, category")
-              .eq("submission_id", submissionId)
-              .limit(500)
-              .then(({ data: files }) => {
-                if (cancelled) return;
-                if (files && files.length > 0) {
-                  console.debug("[step2 sync] submissionId with files", submissionId);
-                  const categories = new Set<string>();
-                  files.forEach((f: { category?: string | null }) => {
-                    const c = (f.category ?? "").toLowerCase().trim();
-                    if (c) categories.add(c);
-                  });
-                  console.debug("[step2 sync] categories found", Array.from(categories));
-                  docIdsInPurpose.forEach((docId) => {
-                    if (categories.has(docId)) setDocUploaded(docId, true);
-                  });
-                  const legacy = (files as { id?: string; category?: string | null }[])
-                    .filter((f) => {
-                      if (!f.id || !f.category) return false;
-                      const catLower = (f.category as string).toLowerCase().trim();
-                      if (VALID_DOC_IDS_LOWER.has(catLower)) return false;
-                      return catLower in LEGACY_CATEGORY_TO_DOC_ID;
-                    })
-                    .map((f) => ({ fileId: f.id!, category: (f.category as string).toLowerCase().trim() }));
-                  setLegacyFiles(legacy);
-                  setSubmissionIdWithLegacy(submissionId);
-                  setSyncingUploads(false);
-                } else {
-                  return tryNext();
-                }
-              })
-          ).catch(() => {
-            if (!cancelled) setSyncingUploads(false);
-          });
-        }
-        return tryNext();
-      })
-      .then(undefined, () => {
-        if (!cancelled) setSyncingUploads(false);
+    Promise.all([
+      supabase
+        .from("submissions")
+        .select("id")
+        .eq("deal_id", dealId)
+        .order("created_at", { ascending: false })
+        .limit(5),
+      supabase.from("deal_doc_states").select("doc_id, status, reason").eq("deal_id", dealId),
+    ]).then(([subRes, overRes]) => {
+      if (cancelled) return;
+      const submissions = (subRes.data || []) as { id: string }[];
+      const overrideRows = (overRes.data || []) as { doc_id: string; status: string; reason?: string | null }[];
+      const overrideMap: Record<string, { status: "pending" | "not_required"; reason?: string | null }> = {};
+      overrideRows.forEach((r) => {
+        if (r.status === "pending" || r.status === "not_required")
+          overrideMap[r.doc_id] = { status: r.status as "pending" | "not_required", reason: r.reason };
       });
-    return () => {
-      cancelled = true;
-    };
-  }, [dealId, state.purposeKey, setDocUploaded, syncTrigger]);
+      setOverrides(overrideMap);
+      const fileCounts: Record<string, number> = {};
+      const filesByDoc: Record<string, { id: string; filename: string; uploaded_at: string; storage_path?: string | null }[]> = {};
+      docIdsInPurpose.forEach((id) => {
+        fileCounts[id] = 0;
+        filesByDoc[id] = [];
+      });
+      let legacyFiles: { fileId: string; category: string }[] = [];
+      let subWithLegacy: string | null = null;
+      function tryNext(idx: number): Promise<void> {
+        if (cancelled || idx >= submissions.length) {
+          docIdsInPurpose.forEach((docId) => {
+            const status = deriveDocStatus(fileCounts[docId] ?? 0, overrideMap[docId] ?? null);
+            setDocUploaded(docId, status === "uploaded");
+            setDocMissing(docId, status === "not_required");
+          });
+          setFileCountByDoc(fileCounts);
+          setFilesByDocId(filesByDoc);
+          setLegacyFiles(legacyFiles);
+          setSubmissionIdWithLegacy(subWithLegacy);
+          setSyncingUploads(false);
+          return Promise.resolve();
+        }
+        const subId = submissions[idx].id;
+        return new Promise<void>((resolve, reject) => {
+          supabase
+            .from("submission_files")
+            .select("id, category, original_filename, display_name, created_at, storage_path")
+            .eq("submission_id", subId)
+            .eq("is_deleted", false)
+            .limit(500)
+            .then(({ data: files }) => {
+            if (cancelled) { resolve(); return; }
+            const list = (files || []) as { id?: string; category?: string | null; original_filename?: string | null; display_name?: string | null; created_at?: string | null; storage_path?: string | null }[];
+            list.forEach((f) => {
+              const c = (f.category ?? "").toLowerCase().trim();
+              const filename = (f.original_filename || f.display_name || "File") ?? "File";
+              const uploaded_at = f.created_at ?? "";
+              const fileId = f.id ?? "";
+              const storage_path = f.storage_path ?? null;
+              let docId: string | null = null;
+              if (VALID_DOC_IDS_LOWER.has(c)) {
+                docId = c;
+                fileCounts[c] = (fileCounts[c] ?? 0) + 1;
+              } else if (c in LEGACY_CATEGORY_TO_DOC_ID) {
+                docId = LEGACY_CATEGORY_TO_DOC_ID[c];
+                fileCounts[docId] = (fileCounts[docId] ?? 0) + 1;
+                if (f.id) {
+                  legacyFiles.push({ fileId: f.id, category: c });
+                  subWithLegacy = subId;
+                }
+              }
+              if (docId && filesByDoc[docId] && fileId) {
+                filesByDoc[docId].push({ id: fileId, filename, uploaded_at, storage_path });
+              }
+            });
+            if (list.length > 0) {
+              docIdsInPurpose.forEach((docId) => {
+                const status = deriveDocStatus(fileCounts[docId] ?? 0, overrideMap[docId] ?? null);
+                setDocUploaded(docId, status === "uploaded");
+                setDocMissing(docId, status === "not_required");
+              });
+              setFileCountByDoc({ ...fileCounts });
+              setFilesByDocId({ ...Object.fromEntries(Object.entries(filesByDoc).map(([k, v]) => [k, [...v]])) });
+              setLegacyFiles([...legacyFiles]);
+              setSubmissionIdWithLegacy(subWithLegacy);
+              setSyncingUploads(false);
+              resolve();
+              return;
+            }
+            void tryNext(idx + 1).then(resolve, reject);
+          }).then(undefined, reject);
+        });
+      }
+      if (submissions.length === 0) {
+        docIdsInPurpose.forEach((docId) => {
+          const status = deriveDocStatus(0, overrideMap[docId] ?? null);
+          setDocUploaded(docId, status === "uploaded");
+          setDocMissing(docId, status === "not_required");
+        });
+        setFileCountByDoc({});
+        setFilesByDocId({});
+        setSyncingUploads(false);
+        setLegacyFiles([]);
+        setSubmissionIdWithLegacy(null);
+        return Promise.resolve();
+      }
+      return tryNext(0);
+    }).catch(() => {
+      if (!cancelled) setSyncingUploads(false);
+    });
+    return () => { cancelled = true; };
+  }, [dealId, state.purposeKey, setDocUploaded, setDocMissing, syncTrigger]);
 
   useEffect(() => {
     if (!dealId) return;
-    const config = PURPOSE_DOC_MATRIX[state.purposeKey];
-    const docIdsInPurpose = [...config.required, ...config.recommended, ...config.supporting];
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
     const onFocus = () => {
-      timeoutId = setTimeout(() => {
-        setSyncingUploads(true);
-        const supabase = supabaseBrowser();
-        console.debug("[step2 sync focus] dealId", dealId);
-        supabase
-          .from("submissions")
-          .select("id")
-          .eq("deal_id", dealId)
-          .order("created_at", { ascending: false })
-          .order("id", { ascending: false })
-          .limit(5)
-          .then(({ data: submissions }) => {
-            const list = (submissions || []) as { id: string }[];
-            console.debug("[step2 sync focus] submissions picked", list.length, list.map((s) => s.id));
-            if (list.length === 0) {
-              setSyncingUploads(false);
-              return;
-            }
-            let index = 0;
-            function tryNext(): Promise<void> {
-              if (index >= list.length) {
-                setSyncingUploads(false);
-                return Promise.resolve();
-              }
-              const submissionId = list[index].id;
-              index += 1;
-              return Promise.resolve(
-                supabase
-                  .from("submission_files")
-                  .select("category")
-                  .eq("submission_id", submissionId)
-                  .limit(500)
-                  .then(({ data: files }) => {
-                    if (files && files.length > 0) {
-                      console.debug("[step2 sync focus] submissionId with files", submissionId);
-                      const categories = new Set<string>();
-                      files.forEach((f: { category?: string | null }) => {
-                        const c = (f.category ?? "").toLowerCase().trim();
-                        if (c) categories.add(c);
-                      });
-                      console.debug("[step2 sync focus] categories found", Array.from(categories));
-                      docIdsInPurpose.forEach((docId) => {
-                        if (categories.has(docId)) setDocUploaded(docId, true);
-                      });
-                      setSyncingUploads(false);
-                    } else {
-                      return tryNext();
-                    }
-                  })
-              ).catch(() => setSyncingUploads(false));
-            }
-            return tryNext();
-          })
-          .then(undefined, () => setSyncingUploads(false));
-      }, 300);
+      timeoutId = setTimeout(() => setSyncTrigger((t) => t + 1), 300);
     };
     window.addEventListener("focus", onFocus);
     return () => {
       window.removeEventListener("focus", onFocus);
       if (timeoutId != null) clearTimeout(timeoutId);
     };
-  }, [dealId, state.purposeKey, setDocUploaded]);
+  }, [dealId]);
+
+  async function handleViewFile(storagePath: string | null | undefined) {
+    if (!storagePath?.trim()) return;
+    const supabase = supabaseBrowser();
+    const { data, error } = await supabase.storage.from("deal-packs").createSignedUrl(storagePath, 60);
+    if (error || !data?.signedUrl) {
+      alert("Could not open file.");
+      return;
+    }
+    window.open(data.signedUrl, "_blank", "noopener,noreferrer");
+  }
+
+  async function handleRemoveFile(fileId: string) {
+    if (removingFileId || !fileId) return;
+    setRemovingFileId(fileId);
+    const supabase = supabaseBrowser();
+    const { error } = await supabase
+      .from("submission_files")
+      .update({ is_deleted: true, deleted_at: new Date().toISOString() })
+      .eq("id", fileId);
+    setRemovingFileId(null);
+    if (error) {
+      alert(`Failed to remove file: ${error.message}`);
+      return;
+    }
+    setSyncTrigger((t) => t + 1);
+  }
+
+  async function handleSaveOverride() {
+    if (!dealId || !overrideModalDocId || savingOverride) return;
+    if (!overrideModalReason.trim()) return;
+    setSavingOverride(true);
+    const supabase = supabaseBrowser();
+    const { error } = await supabase
+      .from("deal_doc_states")
+      .upsert(
+        {
+          deal_id: dealId,
+          doc_id: overrideModalDocId,
+          status: overrideModalStatus,
+          reason: overrideModalReason.trim(),
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "deal_id,doc_id" }
+      );
+    setSavingOverride(false);
+    if (error) {
+      alert(`Failed to save override: ${error.message}`);
+      return;
+    }
+    setOverrideModalDocId(null);
+    setOverrideModalReason("");
+    setSyncTrigger((t) => t + 1);
+  }
 
   async function handleConvertLegacy() {
     if (!submissionIdWithLegacy || legacyFiles.length === 0 || converting) return;
@@ -299,6 +345,14 @@ export default function WizardStep2Page() {
         setUploading(false);
         return;
       }
+      if (replaceExisting) {
+        await supabase
+          .from("submission_files")
+          .update({ is_deleted: true, deleted_at: new Date().toISOString() })
+          .eq("submission_id", submissionId)
+          .eq("category", category)
+          .eq("is_deleted", false);
+      }
       const storagePath = `${submissionId}/${Date.now()}_${uploadFile.name}`;
       const { error: uploadErr } = await supabase.storage
         .from("deal-packs")
@@ -324,9 +378,10 @@ export default function WizardStep2Page() {
         setUploading(false);
         return;
       }
-      setDocUploaded(rowDocId, true);
+      setSyncTrigger((t) => t + 1);
       setUploadModalDocId(null);
       setUploadFile(null);
+      setReplaceExisting(false);
       if (uploadInputRef.current) uploadInputRef.current.value = "";
     } catch (err) {
       console.error("Wizard upload error:", err);
@@ -388,33 +443,126 @@ export default function WizardStep2Page() {
         {docsByTier.map((tier) => {
           const ids = config[tier] as DocTypeId[];
           if (ids.length === 0) return null;
+          const statusCounts = { uploaded: 0, pending: 0, missing: 0, not_required: 0 };
+          ids.forEach((id) => {
+            const s = docStatus(id);
+            if (s === "uploaded") statusCounts.uploaded++;
+            else if (s === "pending") statusCounts.pending++;
+            else if (s === "not_required") statusCounts.not_required++;
+            else statusCounts.missing++;
+          });
+          const counterParts: string[] = [];
+          if (statusCounts.uploaded) counterParts.push(`${statusCounts.uploaded} uploaded`);
+          if (statusCounts.pending) counterParts.push(`${statusCounts.pending} pending`);
+          if (statusCounts.missing) counterParts.push(`${statusCounts.missing} missing`);
+          if (statusCounts.not_required) counterParts.push(`${statusCounts.not_required} not required`);
           return (
             <div key={tier}>
-              <h2 className="text-sm font-bold text-slate-700 mb-2">{TIER_LABELS[tier]}</h2>
+              <div className="flex items-center justify-between mb-2">
+                <h2 className="text-sm font-bold text-slate-700">{TIER_LABELS[tier]}</h2>
+                {counterParts.length > 0 && (
+                  <span className="text-xs text-slate-500">{counterParts.join(" · ")}</span>
+                )}
+              </div>
               <ul className="space-y-2">
                 {ids.map((id) => {
-                  const uploaded = state.docUploaded[id];
+                  const status = docStatus(id);
+                  const count = fileCountByDoc[id] ?? 0;
+                  const files = filesByDocId[id] ?? [];
+                  const isExpanded = expandedDocIds.has(id);
+                  const dotBg =
+                    status === "uploaded" ? "bg-green-500" :
+                    status === "not_required" ? "bg-slate-400" :
+                    status === "pending" ? "bg-amber-500" : "bg-red-400";
+                  const toggleExpand = () => setExpandedDocIds((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(id)) next.delete(id);
+                    else next.add(id);
+                    return new Set(next);
+                  });
+                  const hasOverride = !!overrides[id];
+                  const overrideReason = overrides[id]?.reason?.trim();
+                  const showOverrideReason = isExpanded && (status === "pending" || status === "not_required") && overrideReason;
                   return (
-                    <li key={id} className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-4 py-2">
-                      <span className="text-slate-900 font-medium">{getDocLabel(id)}</span>
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setDocUploaded(id, !uploaded)}
-                          className="text-xs font-semibold text-slate-500 hover:text-slate-700"
-                          suppressHydrationWarning
-                        >
-                          {uploaded ? "Mark missing" : "Mark uploaded"}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setUploadModalDocId(id)}
-                          className="rounded border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-                          suppressHydrationWarning
-                        >
-                          Upload
-                        </button>
+                    <li key={id} className="rounded-lg border border-slate-200 bg-slate-50 overflow-hidden">
+                      <div
+                        role="button"
+                        tabIndex={0}
+                        onClick={toggleExpand}
+                        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleExpand(); } }}
+                        className="flex items-center justify-between px-4 py-2 cursor-pointer hover:bg-slate-100/80"
+                        aria-expanded={isExpanded}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className={`shrink-0 p-0.5 text-slate-500 inline-block transition-transform ${isExpanded ? "rotate-90" : ""}`} aria-hidden>▶</span>
+                          <span className="text-slate-900 font-medium truncate">{getDocLabel(id)}</span>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
+                          <span className={`h-2 w-2 rounded-full ${dotBg}`} title={status} aria-hidden />
+                          <span className="text-xs text-slate-600">{count} {count === 1 ? "file" : "files"}</span>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setOverrideModalDocId(id);
+                              setOverrideModalStatus(overrides[id]?.status ?? "pending");
+                              setOverrideModalReason(overrides[id]?.reason ?? "");
+                            }}
+                            className="text-xs font-semibold text-indigo-600 hover:text-indigo-800"
+                          >
+                            {hasOverride ? "Edit status" : "Set status"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); setUploadModalDocId(id); }}
+                            className="rounded border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                          >
+                            Upload
+                          </button>
+                        </div>
                       </div>
+                      {showOverrideReason && (
+                        <div className="border-t border-slate-200 bg-amber-50/60 px-4 py-2 pl-8 text-sm text-slate-700">
+                          <span className="font-medium text-slate-600">Reason:</span> {overrideReason}
+                        </div>
+                      )}
+                      {isExpanded && files.length > 0 && (
+                        <div className="border-t border-slate-200 bg-white/60 px-4 py-2 pl-8" onClick={(e) => e.stopPropagation()}>
+                          <ul className="space-y-1 text-sm text-slate-700">
+                            {files.map((file) => (
+                              <li key={file.id} className="flex items-center justify-between gap-4">
+                                <span className="truncate min-w-0">{file.filename}</span>
+                                <span className="text-xs text-slate-500 shrink-0">
+                                  {file.uploaded_at ? new Date(file.uploaded_at).toLocaleString() : "—"}
+                                </span>
+                                <div className="flex items-center gap-2 shrink-0">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleViewFile(file.storage_path)}
+                                    disabled={!file.storage_path?.trim()}
+                                    className="text-xs font-semibold text-indigo-600 hover:text-indigo-800 disabled:opacity-50 disabled:cursor-not-allowed"
+                                  >
+                                    View
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRemoveFile(file.id)}
+                                    disabled={removingFileId === file.id}
+                                    className="text-xs font-semibold text-red-600 hover:text-red-800 disabled:opacity-50"
+                                  >
+                                    {removingFileId === file.id ? "Removing…" : "Remove"}
+                                  </button>
+                                </div>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {isExpanded && files.length === 0 && (
+                        <div className="border-t border-slate-200 bg-white/60 px-4 py-2 pl-8 text-sm text-slate-500">
+                          No files uploaded
+                        </div>
+                      )}
                     </li>
                   );
                 })}
@@ -465,6 +613,78 @@ export default function WizardStep2Page() {
         </div>
       )}
 
+      {overrideModalDocId && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !savingOverride) {
+              setOverrideModalDocId(null);
+              setOverrideModalReason("");
+            }
+          }}
+        >
+          <div className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-6 shadow-lg" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-semibold text-slate-900">Override status: {getDocLabel(overrideModalDocId)}</h3>
+            <p className="mt-1 text-sm text-slate-600">Set a status override. Reason is required for both options.</p>
+            <div className="mt-4 space-y-2">
+              <label className="flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="overrideStatus"
+                  checked={overrideModalStatus === "pending"}
+                  onChange={() => setOverrideModalStatus("pending")}
+                  className="rounded border-slate-300 text-indigo-600"
+                />
+                <span className="text-sm">Pending (will upload later)</span>
+              </label>
+              <label className="flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="overrideStatus"
+                  checked={overrideModalStatus === "not_required"}
+                  onChange={() => setOverrideModalStatus("not_required")}
+                  className="rounded border-slate-300 text-indigo-600"
+                />
+                <span className="text-sm">Not required (N/A for this deal)</span>
+              </label>
+            </div>
+            <div className="mt-4">
+              <label className="block text-sm font-semibold text-slate-700 mb-1">Reason (required)</label>
+              <textarea
+                value={overrideModalReason}
+                onChange={(e) => setOverrideModalReason(e.target.value)}
+                placeholder={overrideModalStatus === "not_required" ? "Explain why this document is not required" : "e.g. Will upload after receiving from client"}
+                rows={2}
+                className={`w-full rounded-lg border px-4 py-2 text-sm ${
+                  !overrideModalReason.trim() ? "border-red-400" : "border-slate-300"
+                }`}
+              />
+              {!overrideModalReason.trim() && (
+                <p className="mt-1 text-sm text-red-600">Please provide a reason.</p>
+              )}
+            </div>
+            <div className="mt-6 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => { setOverrideModalDocId(null); setOverrideModalReason(""); }}
+                disabled={savingOverride}
+                className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveOverride}
+                disabled={savingOverride || !overrideModalReason.trim()}
+                className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {savingOverride ? "Saving…" : "Save"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {uploadModalDocId && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
@@ -472,6 +692,7 @@ export default function WizardStep2Page() {
             if (e.target === e.currentTarget && !uploading) {
               setUploadModalDocId(null);
               setUploadFile(null);
+              setReplaceExisting(false);
               if (uploadInputRef.current) uploadInputRef.current.value = "";
             }
           }}
@@ -485,12 +706,22 @@ export default function WizardStep2Page() {
               className="mt-4 block w-full text-sm text-slate-600 file:mr-4 file:rounded-lg file:border-0 file:bg-indigo-50 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-indigo-700"
               onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)}
             />
+            <label className="mt-4 flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={replaceExisting}
+                onChange={(e) => setReplaceExisting(e.target.checked)}
+                className="rounded border-slate-300 text-indigo-600"
+              />
+              <span className="text-sm text-slate-700">Replace existing files in this category</span>
+            </label>
             <div className="mt-6 flex justify-end gap-2">
               <button
                 type="button"
                 onClick={() => {
                   setUploadModalDocId(null);
                   setUploadFile(null);
+                  setReplaceExisting(false);
                   if (uploadInputRef.current) uploadInputRef.current.value = "";
                 }}
                 disabled={uploading}

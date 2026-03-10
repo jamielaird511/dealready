@@ -4,7 +4,13 @@ import { useEffect, useState, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
 
-type RunRow = { id?: string; status: string; created_at: string; updated_at?: string; submission_id?: string };
+type DocCompletenessSnapshot = {
+  required: { uploaded: number; pending: number; missing: number; not_required: number };
+  recommended: { uploaded: number; pending: number; missing: number; not_required: number };
+  supporting: { uploaded: number; pending: number; missing: number; not_required: number };
+  completenessPct: number;
+};
+type RunRow = { id?: string; status: string; created_at: string; updated_at?: string; submission_id?: string; doc_completeness_snapshot?: DocCompletenessSnapshot | null };
 type FindingRow = { id: string; severity: string; workflow_state?: string; title?: string; category?: string; message?: string; fix?: string };
 
 export default function RunResultsPage() {
@@ -335,8 +341,67 @@ export default function RunResultsPage() {
         >
           ← Back to Deal Details
         </button>
-        <h1 style={{ fontSize: 28, fontWeight: 800, marginBottom: 0 }}>DealSense Run Results</h1>
+        <h1 style={{ fontSize: 28, fontWeight: 800, marginBottom: 12 }}>DealSense Run Results</h1>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <button
+            type="button"
+            onClick={() => dealId && router.push(`/app/deals/${dealId}/wizard/step-4`)}
+            disabled={!dealId}
+            style={{
+              padding: "8px 16px",
+              fontSize: 14,
+              fontWeight: 600,
+              borderRadius: 8,
+              border: "1px solid #4f46e5",
+              background: dealId ? "#4f46e5" : "#f1f5f9",
+              color: dealId ? "white" : "#94a3b8",
+              cursor: dealId ? "pointer" : "not-allowed",
+            }}
+          >
+            Re-run DealSense
+          </button>
+          <button
+            type="button"
+            onClick={() => dealId && router.push(`/app/deals/${dealId}/wizard/step-2`)}
+            disabled={!dealId}
+            style={{
+              padding: "8px 16px",
+              fontSize: 14,
+              fontWeight: 600,
+              borderRadius: 8,
+              border: "1px solid #64748b",
+              background: dealId ? "white" : "#f1f5f9",
+              color: dealId ? "#475569" : "#94a3b8",
+              cursor: dealId ? "pointer" : "not-allowed",
+            }}
+          >
+            Back to Documents
+          </button>
+        </div>
       </div>
+
+      {run.doc_completeness_snapshot && (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4">
+          <h2 className="text-sm font-bold text-slate-700 mb-2">Submission completeness</h2>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-slate-600">
+            <span className="font-semibold text-slate-900">{run.doc_completeness_snapshot.completenessPct}%</span>
+            {(["required", "recommended", "supporting"] as const).map((tier) => {
+              const t = run.doc_completeness_snapshot![tier];
+              const parts = [];
+              if (t.uploaded) parts.push(`${t.uploaded} uploaded`);
+              if (t.pending) parts.push(`${t.pending} pending`);
+              if (t.missing) parts.push(`${t.missing} missing`);
+              if (t.not_required) parts.push(`${t.not_required} not required`);
+              if (parts.length === 0) return null;
+              return (
+                <span key={tier}>
+                  {tier.charAt(0).toUpperCase() + tier.slice(1)}: {parts.join(", ")}
+                </span>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Run Status Card */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">

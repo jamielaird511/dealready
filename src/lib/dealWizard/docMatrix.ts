@@ -37,63 +37,63 @@ type T = DocTypeId;
 export const PURPOSE_DOC_MATRIX: Record<WizardPurposeKey, PurposeDocConfig> = {
   business_purchase: {
     required: ["application_narrative", "statement_of_position", "financials", "forecasts", "sale_purchase_agreement"],
-    recommended: ["ytd_accounts", "bank_statements_business", "valuation", "identification"],
-    supporting: ["receivables_payables", "information_memorandum"],
-    taxPositionApplicable: true,
+    recommended: ["bank_statements_personal", "information_memorandum", "identification"],
+    supporting: [],
+    taxPositionApplicable: false,
   },
   startup: {
-    required: ["application_narrative", "statement_of_position", "forecasts"],
-    recommended: ["financials", "bank_statements_business", "bank_statements_personal", "identification"],
-    supporting: ["receivables_payables", "information_memorandum"],
-    taxPositionApplicable: true,
+    required: ["application_narrative", "statement_of_position", "forecasts", "bank_statements_personal"],
+    recommended: ["identification"],
+    supporting: [],
+    taxPositionApplicable: false,
   },
   refinance_business: {
-    required: ["application_narrative", "statement_of_position", "financials"],
-    recommended: ["ytd_accounts", "bank_statements_business", "valuation", "identification"],
-    supporting: ["receivables_payables", "forecasts"],
+    required: ["application_narrative", "statement_of_position", "financials", "bank_statements_business"],
+    recommended: ["ytd_accounts", "receivables_payables", "forecasts", "identification"],
+    supporting: [],
     taxPositionApplicable: true,
   },
   refinance_property: {
-    required: ["application_narrative", "statement_of_position", "financials"],
-    recommended: ["bank_statements_personal", "valuation", "rental_appraisal", "identification"],
-    supporting: ["tenancy_agreements", "forecasts"],
+    required: ["application_narrative", "statement_of_position", "financials", "bank_statements_business", "valuation"],
+    recommended: ["ytd_accounts", "bank_statements_personal", "forecasts", "identification"],
+    supporting: ["sale_purchase_agreement", "rental_appraisal"],
     taxPositionApplicable: true,
   },
   shareholder_buyout: {
-    required: ["application_narrative", "statement_of_position", "financials", "sale_purchase_agreement"],
-    recommended: ["valuation", "ytd_accounts", "bank_statements_business", "identification"],
-    supporting: ["information_memorandum", "receivables_payables"],
+    required: ["application_narrative", "statement_of_position", "financials"],
+    recommended: ["ytd_accounts", "forecasts", "sale_purchase_agreement", "identification"],
+    supporting: ["receivables_payables"],
     taxPositionApplicable: true,
   },
   working_capital: {
     required: ["application_narrative", "statement_of_position", "financials", "forecasts"],
-    recommended: ["ytd_accounts", "bank_statements_business", "receivables_payables", "identification"],
-    supporting: ["invoice_quote"],
+    recommended: ["ytd_accounts", "receivables_payables", "identification"],
+    supporting: [],
     taxPositionApplicable: true,
   },
   equipment: {
-    required: ["application_narrative", "statement_of_position", "financials", "invoice_quote"],
-    recommended: ["forecasts", "bank_statements_business", "identification"],
-    supporting: ["valuation"],
+    required: ["application_narrative", "statement_of_position", "financials", "invoice_quote", "sale_purchase_agreement"],
+    recommended: ["ytd_accounts", "identification"],
+    supporting: ["receivables_payables", "forecasts", "information_memorandum", "valuation"],
     taxPositionApplicable: true,
   },
   property_purchase_oo: {
-    required: ["application_narrative", "statement_of_position", "financials"],
-    recommended: ["valuation", "bank_statements_personal", "identification"],
-    supporting: ["forecasts", "rental_appraisal"],
+    required: ["application_narrative", "statement_of_position", "financials", "sale_purchase_agreement", "valuation"],
+    recommended: ["ytd_accounts", "forecasts", "information_memorandum", "identification"],
+    supporting: ["receivables_payables"],
     taxPositionApplicable: true,
   },
   property_purchase_inv: {
-    required: ["application_narrative", "statement_of_position", "financials"],
-    recommended: ["valuation", "rental_appraisal", "tenancy_agreements", "bank_statements_personal", "identification"],
-    supporting: ["forecasts"],
+    required: ["application_narrative", "statement_of_position", "sale_purchase_agreement", "information_memorandum", "valuation", "tenancy_agreements"],
+    recommended: ["identification"],
+    supporting: ["rental_appraisal"],
     taxPositionApplicable: true,
   },
   other: {
     required: ["application_narrative", "statement_of_position"],
-    recommended: ["financials", "forecasts", "identification"],
-    supporting: ["bank_statements_business", "bank_statements_personal", "valuation"],
-    taxPositionApplicable: true,
+    recommended: [],
+    supporting: [],
+    taxPositionApplicable: false,
   },
 };
 
@@ -130,3 +130,13 @@ export const CATEGORY_TO_WIZARD_DOC_IDS: Record<string, DocTypeId[]> = Object.fr
 export const WIZARD_DOC_ID_TO_UPLOAD_CATEGORY: Record<DocTypeId, string> = Object.fromEntries(
   DOC_TYPES.map((d) => [d.id, d.id])
 ) as Record<DocTypeId, string>;
+
+/** Legacy submission_files.category -> wizard doc id. */
+export const LEGACY_CATEGORY_TO_DOC_ID: Record<string, DocTypeId> = {
+  broker_app: "application_narrative",
+  financials: "financials",
+  forecasts: "forecasts",
+  security: "valuation",
+  id: "identification",
+  identification: "identification",
+};

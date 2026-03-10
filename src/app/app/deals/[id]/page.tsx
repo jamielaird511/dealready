@@ -5,7 +5,7 @@ import { createPortal } from "react-dom";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
 import { DeleteFileDialog } from "@/components/DeleteFileDialog";
-import { DOC_TYPES, PURPOSE_DOC_MATRIX } from "@/lib/dealWizard/docMatrix";
+import { DOC_TYPES, PURPOSE_DOC_MATRIX, getDocLabel } from "@/lib/dealWizard/docMatrix";
 import type { DocTypeId } from "@/lib/dealWizard/docMatrix";
 import type { WizardPurposeKey } from "@/lib/dealWizard/types";
 
@@ -1681,7 +1681,29 @@ export default function DealPage() {
               const warningsActive = active.filter((f) => f.severity === "warning").length;
               const label = criticalActive > 0 ? "Not ready to submit" : warningsActive > 0 ? "Needs attention" : "Ready to submit";
               const style = criticalActive > 0 ? { background: "#fee2e2", color: "#991b1b" } : warningsActive > 0 ? { background: "#fef3c7", color: "#92400e" } : { background: "#d1fae5", color: "#065f46" };
-              const checklistItems = PURPOSE_CHECKLIST[purposeType] ?? [];
+              const config = PURPOSE_DOC_MATRIX[purposeType as WizardPurposeKey];
+              const checklistItems = config
+                ? [
+                    ...config.required.map((id) => ({
+                      key: id,
+                      label: getDocLabel(id),
+                      tier: "required" as DocTier,
+                      acceptedCategories: [id],
+                    })),
+                    ...config.recommended.map((id) => ({
+                      key: id,
+                      label: getDocLabel(id),
+                      tier: "recommended" as DocTier,
+                      acceptedCategories: [id],
+                    })),
+                    ...config.supporting.map((id) => ({
+                      key: id,
+                      label: getDocLabel(id),
+                      tier: "supporting" as DocTier,
+                      acceptedCategories: [id],
+                    })),
+                  ]
+                : [];
               const req = tierStats(files, checklistItems, "required");
               const rec = tierStats(files, checklistItems, "recommended");
               const sup = tierStats(files, checklistItems, "supporting");
@@ -2832,7 +2854,29 @@ export default function DealPage() {
           Based on borrowing purpose: {PURPOSE_LABELS[purposeType] ?? "Other"}
         </p>
         {(() => {
-          const items = PURPOSE_CHECKLIST[purposeType] ?? [];
+          const config = PURPOSE_DOC_MATRIX[purposeType as WizardPurposeKey];
+          const items = config
+            ? [
+                ...config.required.map((id) => ({
+                  key: id,
+                  label: getDocLabel(id),
+                  tier: "required" as DocTier,
+                  acceptedCategories: [id],
+                })),
+                ...config.recommended.map((id) => ({
+                  key: id,
+                  label: getDocLabel(id),
+                  tier: "recommended" as DocTier,
+                  acceptedCategories: [id],
+                })),
+                ...config.supporting.map((id) => ({
+                  key: id,
+                  label: getDocLabel(id),
+                  tier: "supporting" as DocTier,
+                  acceptedCategories: [id],
+                })),
+              ]
+            : [];
           if (items.length === 0) {
             return (
               <p style={{ fontSize: 13, color: "#6b7280", margin: 0 }}>
