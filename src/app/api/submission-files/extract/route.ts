@@ -1,10 +1,42 @@
 import { NextResponse } from "next/server";
 import { createSupabaseAdminClient } from "@/lib/supabase/server";
 import { writeSubmissionFileChunks } from "@/lib/chunking";
+import { DocumentProcessorServiceClient } from "@google-cloud/documentai";
 // @ts-expect-error - pdf-parse has no type declarations
 import pdfParse from "pdf-parse";
 
 const MIN_TEXT_LENGTH = 200;
+
+let documentAiClient: DocumentProcessorServiceClient | null = null;
+
+function getDocumentAiClient() {
+  if (documentAiClient) return documentAiClient;
+
+  const location = process.env.GOOGLE_DOCUMENT_AI_LOCATION;
+  if (!location) {
+    throw new Error("Missing GOOGLE_DOCUMENT_AI_LOCATION");
+  }
+
+  const apiEndpoint = `${location}-documentai.googleapis.com`;
+
+  if (process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
+    const creds = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
+    documentAiClient = new DocumentProcessorServiceClient({
+      apiEndpoint,
+      credentials: {
+        client_email: creds.client_email,
+        private_key: creds.private_key,
+      },
+      projectId: creds.project_id,
+    });
+  } else {
+    documentAiClient = new DocumentProcessorServiceClient({
+      apiEndpoint,
+    });
+  }
+
+  return documentAiClient;
+}
 
 function isPdf(mimeType: string | null, storagePath: string): boolean {
   return (
@@ -21,42 +53,43 @@ async function toBufferAsync(data: Blob | ArrayBuffer | Buffer): Promise<Buffer>
 }
 
 async function runOcrFallback(buffer: Buffer, fileId: string): Promise<string> {
-  const ocrUrl = process.env.OCR_FALLBACK_URL;
-  if (!ocrUrl) {
-    console.log("[submission-files/extract] OCR config missing (OCR_FALLBACK_URL not set); skipping OCR for file:", fileId);
+  const projectId = process.env.GOOGLE_CLOUD_PROJECT_ID;
+  const location = process.env.GOOGLE_DOCUMENT_AI_LOCATION;
+  const processorId = process.env.GOOGLE_DOCUMENT_AI_PROCESSOR_ID;
+
+  if (!projectId || !location || !processorId) {
+    console.log("[submission-files/extract] Document AI config missing; skipping OCR for file:", fileId);
     return "";
   }
 
   try {
-    const headers: Record<string, string> = {
-      "Content-Type": "application/pdf",
-    };
-    const apiKey = process.env.OCR_FALLBACK_API_KEY;
-    if (apiKey) {
-      headers.Authorization = `Bearer ${apiKey}`;
-    }
+    const client = getDocumentAiClient();
+    const name = `projects/${projectId}/locations/${location}/processors/${processorId}`;
 
-    const res = await fetch(ocrUrl, {
-      method: "POST",
-      headers,
-      body: new Uint8Array(buffer),
+    const [result] = await client.processDocument({
+      name,
+      rawDocument: {
+        content: buffer,
+        mimeType: "application/pdf",
+      },
     });
 
-    const text = await res.text().catch(() => "");
-    let json: any = {};
-    try {
-      json = text ? JSON.parse(text) : {};
-    } catch {
-      json = {};
-    }
-    const ocrText =
-      typeof json?.text === "string"
-        ? json.text
-        : "";
+    const text = result.document?.text?.trim() ?? "";
 
-    return (ocrText ?? "").trim();
-  } catch (err) {
-    console.error("[submission-files/extract] OCR request failed for file:", fileId, err);
+    console.log(
+      "[submission-files/extract] Document AI OCR complete for file:",
+      fileId,
+      "chars:",
+      text.length
+    );
+
+    return text;
+  } catch (error) {
+    console.error(
+      "[submission-files/extract] Document AI OCR failed for file:",
+      fileId,
+      error
+    );
     return "";
   }
 }

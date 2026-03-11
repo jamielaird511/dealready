@@ -458,11 +458,12 @@ export async function POST(
       }
     }
 
-    // Fetch submission files
+    // Fetch submission files (exclude soft-deleted so only current active files are analysed)
     const { data: files, error: filesError } = await supabase
       .from("submission_files")
       .select("id, category, display_name, original_filename, extraction_status, extracted_text, doc_type")
-      .eq("submission_id", run.submission_id);
+      .eq("submission_id", run.submission_id)
+      .eq("is_deleted", false);
 
     if (filesError) {
       console.error("[DealSense Process API] Error loading files:", filesError);
