@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { computeFindings, type Party } from "@/lib/dealsense/runChecks";
+import { extractDealSummaryData } from "@/lib/dealsense/extractDealSummaryData";
+import { renderDealSummary } from "@/lib/dealsense/renderDealSummary";
 
 type FileRow = {
   id?: string;
@@ -645,6 +647,85 @@ export async function POST(
       }),
     ];
 
+    // DealSense structured summary extraction (typed JSON + deterministic render).
+    // This is a reporting layer and does not affect findings generation or scoring.
+    let dealSummaryData: unknown = null;
+    let dealSummaryText = "";
+    try {
+      const criticalCount = findingsToInsert.filter((f: any) => f?.severity === "critical").length;
+      const warningCount = findingsToInsert.filter((f: any) => f?.severity === "warning").length;
+      const infoCount = findingsToInsert.filter((f: any) => f?.severity === "info").length;
+
+      const openFindings = (findingsToInsert as any[]).filter((f) => {
+        const s = (f?.workflow_state ?? "open").toString();
+        return s === "open" || s === "acknowledged";
+      });
+      const hasOpenCritical = openFindings.some((f) => f?.severity === "critical");
+
+      const topFindings = [...openFindings]
+        .sort((a, b) => {
+          const rank = (s: string) => (s === "critical" ? 0 : s === "warning" ? 1 : 2);
+          return rank(a?.severity) - rank(b?.severity);
+        })
+        .slice(0, 6)
+        .map((f) => {
+          const t = typeof f?.title === "string" ? f.title.trim() : "";
+          if (t) return t;
+          const m = typeof f?.message === "string" ? f.message.trim() : "";
+          return m;
+        })
+        .filter(Boolean);
+
+      const themeCounts: Record<string, number> = {};
+      for (const f of findingsToInsert as any[]) {
+        const cat = (f?.category ?? "").toString().toLowerCase();
+        const theme =
+          cat === "parties"
+            ? "Deal Structure"
+            : cat === "clarification"
+              ? "Compliance"
+              : cat === "documents" || cat === "completeness"
+                ? "Documents"
+                : "Documents";
+        themeCounts[theme] = (themeCounts[theme] ?? 0) + 1;
+      }
+      const themeSummary = Object.entries(themeCounts)
+        .sort((a, b) => b[1] - a[1])
+        .map(([k, v]) => `${k}: ${v}`)
+        .join(" · ");
+
+      const combinedExtractedText = (aiFiles || [])
+        .map((f: any) => {
+          const name = (f?.display_name ?? f?.original_filename ?? f?.id ?? "File").toString();
+          const text = (f?.extracted_text ?? "").toString().trim();
+          if (!text) return "";
+          return `--- ${name} ---\n${text}`;
+        })
+        .filter(Boolean)
+        .join("\n\n")
+        .slice(0, 20000);
+
+      const extracted = await extractDealSummaryData({
+        run_id: runId,
+        purpose_type: purposeType,
+        parties: (parties || []).map((p: any) => ({ roles: Array.isArray(p.roles) ? p.roles : [] })),
+        combined_extracted_text: combinedExtractedText,
+        findings_titles: topFindings,
+      });
+
+      if (extracted.ok) {
+        dealSummaryData = extracted.data;
+        dealSummaryText = renderDealSummary(extracted.data, {
+          ready_to_submit: summary.status === "ready" || summary.score >= 70,
+          has_open_critical: hasOpenCritical,
+        }).text;
+      } else {
+        console.log("[DealSense Process Summary] Summary extraction skipped/failed:", extracted.error);
+      }
+    } catch (err) {
+      console.error("[DealSense Process Summary] Summary extraction error:", err);
+    }
+
     if (findingsToInsert.length > 0) {
       const { error: insertError } = await supabase
         .from("submission_run_findings")
@@ -670,6 +751,8 @@ export async function POST(
         assessment_status: summary.status,
         top_fixes: summary.topFixes,
         assessed_at: new Date().toISOString(),
+        deal_summary_data: dealSummaryData,
+        deal_summary_text: dealSummaryText,
       })
       .eq("id", runId);
 
@@ -686,6 +769,8 @@ export async function POST(
       status: "completed",
       findingsCount: findings.length,
       summary,
+      deal_summary_data: dealSummaryData,
+      deal_summary_text: dealSummaryText,
     });
   } catch (err) {
     console.error("[DealSense Process API] Error processing run:", err);

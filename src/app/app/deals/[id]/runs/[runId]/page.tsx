@@ -20,6 +20,8 @@ type RunRow = {
   doc_completeness_snapshot?: DocCompletenessSnapshot | null;
   score?: number | null;
   assessment_status?: string | null;
+  deal_summary_data?: unknown | null;
+  deal_summary_text?: string | null;
 };
 type FindingRow = { id: string; severity: string; workflow_state?: string; title?: string; category?: string; message?: string; fix?: string; score_impact?: number | null };
 
@@ -39,6 +41,8 @@ export default function RunResultsPage() {
   const [runAgainLoading, setRunAgainLoading] = useState(false);
   const [runAgainError, setRunAgainError] = useState<string | null>(null);
   const processTriggeredRef = useRef(false);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const processingStartRef = useRef<number | null>(null);
 
   const missingRunId = !runId || runId === "undefined";
   const displayProcessError = processError ?? (missingRunId ? "Missing runId" : null);
@@ -186,6 +190,27 @@ export default function RunResultsPage() {
     return () => clearInterval(interval);
   }, [run, runId]);
 
+  // Track elapsed time while run is queued/running and drive stage messaging
+  useEffect(() => {
+    if (!run || (run.status !== "queued" && run.status !== "running")) {
+      processingStartRef.current = null;
+      setElapsedSeconds(0);
+      return;
+    }
+
+    if (!processingStartRef.current) {
+      processingStartRef.current = Date.now();
+    }
+
+    const interval = setInterval(() => {
+      if (!processingStartRef.current) return;
+      const diff = Math.floor((Date.now() - processingStartRef.current) / 1000);
+      setElapsedSeconds(diff);
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [run?.status]);
+
   if (loading) {
     return (
       <div className="space-y-8">
@@ -282,6 +307,93 @@ export default function RunResultsPage() {
     ? buildReportDisplay(run, findings)
     : null;
 
+  const dealSummary = (run.deal_summary_data && typeof run.deal_summary_data === "object")
+    ? (run.deal_summary_data as any)
+    : null;
+  const summaryText = (field: any, kind?: "purpose" | "repayment") => {
+    const v = typeof field?.value === "string" ? field.value.trim() : "";
+    if (!v) {
+      if (kind === "purpose") return "Purpose not clearly described in pack";
+      if (kind === "repayment") return "Primary repayment source not clearly described";
+      return "Not clearly documented";
+    }
+    if (kind === "purpose") {
+      const lower = v.toLowerCase();
+      if (lower === "business_purchase") return "Business acquisition";
+      if (lower === "working_capital") return "Working capital";
+      if (lower === "property_purchase") return "Property purchase";
+      if (lower === "shareholder_buyout") return "Shareholder buyout";
+      if (lower === "refinance") return "Refinance";
+      if (lower === "startup") return "Startup funding";
+      if (lower === "equipment") return "Equipment acquisition";
+    }
+    if (kind === "repayment") {
+      const lower = v.toLowerCase();
+      if (lower.includes("salary") || lower.includes("wage")) return "Personal income (salary/wages)";
+      if (lower.includes("business cash flow") || lower.includes("trading")) return "Business trading cash flow";
+      if (lower.includes("sale proceeds")) return "Sale proceeds from asset disposal";
+      if (lower.includes("refinance")) return "Refinance of existing facilities";
+      if (lower.includes("rental") || lower.includes("rent")) return "Property rental income";
+    }
+    return v;
+  };
+  const formatCurrencyShort = (value: number) => {
+    const abs = Math.abs(value);
+    if (abs >= 1_000_000) return `$${(value / 1_000_000).toFixed(1)}m`;
+    if (abs >= 1_000) return `$${(value / 1_000).toFixed(1)}k`;
+    return `$${value.toFixed(0)}`;
+  };
+  const summaryNum = (field: any) => {
+    const v = typeof field?.value === "number" && Number.isFinite(field.value) ? field.value : null;
+    if (v == null) return "Not clearly documented";
+    return formatCurrencyShort(Math.round(v));
+  };
+  const creditPurpose = dealSummary ? summaryText(dealSummary.purpose, "purpose") : "Not clearly documented";
+  const creditRepayment = dealSummary ? summaryText(dealSummary.repayment_source, "repayment") : "Not clearly documented";
+  const creditFinancialSupport = (() => {
+    const ff = dealSummary?.forecast_figures;
+    const rev = ff ? summaryNum(ff.revenue) : null;
+    const ebitda = ff ? summaryNum(ff.ebitda) : null;
+    const dscr =
+      typeof ff?.dscr?.value === "number" && Number.isFinite(ff.dscr.value)
+        ? ff.dscr.value.toFixed(2)
+        : null;
+    const snippets = [];
+    if (rev && rev !== "Not clearly documented") snippets.push(`forecast revenue of ${rev}`);
+    if (ebitda && ebitda !== "Not clearly documented") snippets.push(`forecast EBITDA of ${ebitda}`);
+    if (dscr) snippets.push(`DSCR around ${dscr}`);
+    if (snippets.length === 0) return "Not clearly documented";
+    return `Forecasts indicate ${snippets.join(", ")}.`;
+  })();
+  const creditSecondarySupport = (() => {
+    const ppl = Array.isArray(dealSummary?.key_people) ? dealSummary.key_people : [];
+    const names = ppl
+      .filter((p: any) => typeof p?.name === "string" && p.name.trim())
+      .slice(0, 2)
+      .map((p: any) => {
+        const roleRaw = typeof p?.role === "string" ? p.role.trim() : "";
+        if (roleRaw && ["borrower", "applicant"].includes(roleRaw.toLowerCase())) {
+          return p.name.trim();
+        }
+        const role = roleRaw ? ` — ${roleRaw}` : "";
+        return `${p.name.trim()}${role}`;
+      });
+    return names.length > 0 ? names.join(", ") : "Not clearly documented";
+  })();
+  const creditSecurityPosition = (() => {
+    const openStates = ["open", "acknowledged"];
+    const open = findings.filter((f) => openStates.includes((f.workflow_state ?? "open").toLowerCase()));
+    const hasSecurity = open.some((f) => {
+      const t = `${f.title ?? ""} ${f.message ?? ""}`.toLowerCase();
+      return t.includes("security") || t.includes("collateral") || t.includes("ranking");
+    });
+    return hasSecurity ? "Requires clarification (security/collateral details)" : "Not clearly documented";
+  })();
+  const creditNextStep =
+    report?.summary.must_resolve?.[0] ??
+    report?.summary.should_improve?.[0] ??
+    "Review key blockers and re-run DealSense";
+
   const activeFindings = findings.filter((f) => {
     const s = f.workflow_state ?? "open";
     return s === "open" || s === "acknowledged";
@@ -291,6 +403,25 @@ export default function RunResultsPage() {
     if (list.some((f) => f.category === "parties" || (f.title ?? "").toLowerCase().includes("borrower"))) return 1;
     if (list.some((f) => f.category === "documents")) return 2;
     return 3;
+  })();
+
+  const processingStages = [
+    "Preparing run",
+    "Extracting document text",
+    "Reviewing borrower and structure",
+    "Assessing financial information",
+    "Checking supporting documents",
+    "Generating findings",
+    "Preparing DealSense summary",
+  ];
+  const currentStage =
+    run && run.status === "running" && processingStages.length > 0
+      ? processingStages[Math.floor(elapsedSeconds / 5) % processingStages.length]
+      : "Preparing run";
+  const formattedElapsed = (() => {
+    const m = Math.floor(elapsedSeconds / 60);
+    const s = elapsedSeconds % 60;
+    return `${m}:${s.toString().padStart(2, "0")}`;
   })();
 
   // Handler to update finding workflow_state
@@ -612,6 +743,40 @@ export default function RunResultsPage() {
         )}
       </div>
 
+      {/* Credit view (compact, structured) */}
+      {(run.status === "completed" || run.status === "failed") && (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
+          <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 12, color: "#111827" }}>Credit view</h2>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, fontSize: 13, color: "#334155" }}>
+            {[
+              ["Purpose", creditPurpose],
+              ["Primary repayment", creditRepayment],
+              ["Financial support", creditFinancialSupport],
+              ["Secondary support", creditSecondarySupport],
+              ["Security position", creditSecurityPosition],
+              ["Main gap / Next step", creditNextStep],
+            ].map(([label, value]) => (
+              <div key={label} style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+                <div style={{ width: 160, flexShrink: 0, color: "#64748b", fontWeight: 600 }}>{label}</div>
+                <div style={{ flex: 1, lineHeight: 1.5 }}>{value}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Persisted transaction summary (from DealSense run) */}
+      {run.deal_summary_text && run.deal_summary_text.trim() && (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
+          <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 12, color: "#111827" }}>
+            Transaction summary
+          </h2>
+          <div style={{ fontSize: 13, color: "#334155", lineHeight: 1.6, whiteSpace: "pre-line" }}>
+            {run.deal_summary_text}
+          </div>
+        </div>
+      )}
+
       {/* Findings by theme (credit-memo style) */}
       {(run.status === "completed" || run.status === "failed") && (
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
@@ -736,13 +901,42 @@ export default function RunResultsPage() {
 
       {/* Loading/Processing State */}
       {(run.status === "queued" || run.status === "running") && (
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 text-center">
-          <p style={{ fontSize: 14, opacity: 0.6, marginBottom: 8 }}>
-            {run.status === "queued" ? "Starting..." : "Run is processing..."}
-          </p>
-          <p style={{ fontSize: 12, opacity: 0.5 }}>
-            This page will update automatically when the run completes.
-          </p>
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <div>
+              <p style={{ fontSize: 14, color: "#0f172a", margin: 0, fontWeight: 600 }}>
+                {run.status === "queued" ? "DealSense run is starting…" : "DealSense run is in progress…"}
+              </p>
+              <p style={{ fontSize: 12, color: "#64748b", margin: "4px 0 0" }}>
+                Current stage: {currentStage || (run.status === "queued" ? "Preparing run" : "Processing")}
+              </p>
+            </div>
+            <div style={{ fontSize: 12, color: "#64748b" }}>
+              Elapsed: {formattedElapsed}
+            </div>
+          </div>
+          <div style={{ marginTop: 8 }}>
+            <div
+              style={{
+                height: 4,
+                borderRadius: 9999,
+                background: "#e5e7eb",
+                overflow: "hidden",
+              }}
+            >
+              <div
+                className="animate-pulse"
+                style={{
+                  height: "100%",
+                  width: "40%",
+                  background: "linear-gradient(90deg, #cbd5f5, #6366f1, #cbd5f5)",
+                }}
+              />
+            </div>
+            <p style={{ fontSize: 12, color: "#94a3b8", marginTop: 8, marginBottom: 0 }}>
+              This page will update automatically when the run completes. You can continue working while DealSense finishes its analysis.
+            </p>
+          </div>
         </div>
       )}
     </div>
