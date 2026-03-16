@@ -1,3 +1,5 @@
+import { DEALSENSE_QUESTIONS } from "@/lib/dealsense/questions";
+
 /**
  * Credit-memo-style report display model for DealSense.
  * Transforms raw run + findings into a lending-assistant-friendly structure.
@@ -59,9 +61,16 @@ export type ReportThemeGroup = {
   findings: ReportFinding[];
 };
 
+export type DealSenseQuestionSummary = {
+  summary: string;
+  keyFacts: { label: string; value: string; question_id: string }[];
+  informationGaps: { label: string; question_id: string }[];
+};
+
 export type DealSenseReportDisplay = {
   summary: ReportSummary;
   themes: ReportThemeGroup[];
+  dealsenseSummary?: DealSenseQuestionSummary;
 };
 
 /** Map raw category/title to a controlled report theme */
@@ -398,9 +407,22 @@ export type RawFindingRow = {
 export type RawRunRow = {
   score?: number | null;
   status?: string;
+  // Optional JSON summary data attached during processing (includes DealSense questions).
+  deal_summary_data?: unknown;
 };
 
 const SCORE_THRESHOLD_READY = 70;
+
+type DealSenseQuestionAnswerRow = {
+  question_id?: string;
+  answer?: string;
+  confidence?: string;
+  evidence?: string;
+  value?: number;
+  currency?: string;
+  unit?: string;
+  metrics?: Record<string, unknown>;
+};
 
 function findingBusinessPriority(f: RawFindingRow): number {
   // Lower score = higher priority
@@ -570,6 +592,149 @@ function buildExecutiveSummary(
   return second ? `${first} ${second}` : first;
 }
 
+function buildDealSenseQuestionSummary(run: RawRunRow): DealSenseQuestionSummary | null {
+  const data = (run as any)?.deal_summary_data as any;
+  const answersRaw = Array.isArray(data?.dealsense_questions) ? data.dealsense_questions : [];
+  if (!answersRaw || answersRaw.length === 0) return null;
+
+  const byId = new Map(DEALSENSE_QUESTIONS.map((q) => [q.id, q]));
+  const normalise = (s: unknown) =>
+    typeof s === "string" ? s.trim() : typeof s === "number" ? String(s) : "";
+
+  const COULD_NOT_DETERMINE_PHRASE =
+    "dealsense could not determine this from the documents provided";
+
+  const keyFacts: { label: string; value: string; question_id: string }[] = [];
+  const informationGaps: { label: string; question_id: string }[] = [];
+
+  // Preserve logical question order from DEALSENSE_QUESTIONS
+  for (const q of DEALSENSE_QUESTIONS) {
+    const answerRow = (answersRaw as DealSenseQuestionAnswerRow[]).find(
+      (a) => normalise(a.question_id) === q.id
+    );
+    if (!answerRow) continue;
+
+    const label = normalise((q as any).label) || normalise(q.question) || q.id;
+    const answer = normalise(answerRow.answer);
+    const confidence = normalise(answerRow.confidence).toLowerCase();
+    const evidence = normalise(answerRow.evidence);
+    const numericValue =
+      typeof answerRow.value === "number" && Number.isFinite(answerRow.value)
+        ? (answerRow.value as number)
+        : null;
+    const currency = normalise(answerRow.currency);
+    const isLowConfidence = confidence === "low";
+    const isMissingText =
+      !answer ||
+      answer.toLowerCase().includes(COULD_NOT_DETERMINE_PHRASE) ||
+      answer.toLowerCase().includes("could not determine");
+
+    if (!isMissingText && (confidence === "high" || confidence === "medium")) {
+      let display = answer;
+
+      // Compact metric-style rendering for selected question types where metrics exist
+      const metrics = (answerRow.metrics ?? {}) as Record<string, unknown>;
+      if (q.id === "historical_financials" && metrics && typeof metrics === "object") {
+        const rev =
+          typeof metrics.revenue === "number" && Number.isFinite(metrics.revenue)
+            ? (metrics.revenue as number)
+            : null;
+        const gm =
+          typeof metrics.gross_margin_percent === "number" &&
+          Number.isFinite(metrics.gross_margin_percent)
+            ? (metrics.gross_margin_percent as number)
+            : null;
+        const ebitda =
+          typeof metrics.ebitda === "number" && Number.isFinite(metrics.ebitda)
+            ? (metrics.ebitda as number)
+            : null;
+        const period = normalise(metrics.period);
+        const mCurrency = normalise(metrics.currency) || currency;
+
+        const parts: string[] = [];
+        if (rev != null) {
+          const revFmt = rev.toLocaleString(undefined, { maximumFractionDigits: 0 });
+          parts.push(`Revenue ${mCurrency || "NZD"} ${revFmt}`);
+        }
+        if (gm != null) {
+          const gmFmt = gm.toFixed(0);
+          parts.push(`Gross margin ${gmFmt}%`);
+        }
+        if (ebitda != null) {
+          const eFmt = ebitda.toLocaleString(undefined, { maximumFractionDigits: 0 });
+          parts.push(`EBITDA ${mCurrency || "NZD"} ${eFmt}`);
+        }
+        if (period) {
+          parts.push(`Period ${period}`);
+        }
+        if (parts.length > 0) {
+          display = parts.join("; ");
+        }
+      } else if (q.id === "forecasts" && metrics && typeof metrics === "object") {
+        const fRev =
+          typeof metrics.forecast_revenue === "number" &&
+          Number.isFinite(metrics.forecast_revenue)
+            ? (metrics.forecast_revenue as number)
+            : null;
+        const period = normalise(metrics.period);
+        const mCurrency = normalise(metrics.currency) || currency;
+
+        const parts: string[] = [];
+        if (fRev != null) {
+          const revFmt = fRev.toLocaleString(undefined, { maximumFractionDigits: 0 });
+          parts.push(`Forecast revenue ${mCurrency || "NZD"} ${revFmt}`);
+        }
+        if (period) {
+          parts.push(`Period ${period}`);
+        }
+        if (parts.length > 0) {
+          display = parts.join("; ");
+        }
+      } else if (q.id === "bank_funding" && metrics && typeof metrics === "object") {
+        const minVal =
+          typeof metrics.min_value === "number" && Number.isFinite(metrics.min_value)
+            ? (metrics.min_value as number)
+            : null;
+        const maxVal =
+          typeof metrics.max_value === "number" && Number.isFinite(metrics.max_value)
+            ? (metrics.max_value as number)
+            : null;
+        const mCurrency = normalise(metrics.currency) || currency;
+
+        if (minVal != null && maxVal != null) {
+          const minFmt = minVal.toLocaleString(undefined, { maximumFractionDigits: 0 });
+          const maxFmt = maxVal.toLocaleString(undefined, { maximumFractionDigits: 0 });
+          display = `${mCurrency || "NZD"} ${minFmt}–${maxFmt}`;
+        }
+      } else if (numericValue != null) {
+        const formatted = numericValue.toLocaleString(undefined, {
+          maximumFractionDigits: 0,
+        });
+        display = currency ? `${currency} ${formatted}` : `$${formatted}`;
+      }
+
+      const valueText =
+        evidence && evidence.length > 0 ? `${display} (Evidence: ${evidence})` : display;
+      keyFacts.push({ label, value: valueText, question_id: q.id });
+    } else if (isMissingText || isLowConfidence) {
+      informationGaps.push({ label, question_id: q.id });
+    }
+  }
+
+  if (keyFacts.length === 0 && informationGaps.length === 0) {
+    return null;
+  }
+
+  const summary =
+    "DealSense has reviewed the uploaded documents and identified the core transaction elements below.";
+
+  return {
+    summary,
+    keyFacts,
+    informationGaps,
+  };
+}
+
 /**
  * Build the report display from run + raw findings.
  * Keeps underlying data unchanged; derives summary and themed groups.
@@ -730,5 +895,7 @@ export function buildReportDisplay(
       };
     });
 
-  return { summary, themes };
+  const dealsenseSummary = buildDealSenseQuestionSummary(run) ?? undefined;
+
+  return { summary, themes, dealsenseSummary };
 }

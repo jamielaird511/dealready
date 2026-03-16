@@ -43,6 +43,19 @@ export default function RunResultsPage() {
   const processTriggeredRef = useRef(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const processingStartRef = useRef<number | null>(null);
+  const [clarifyState, setClarifyState] = useState<Record<string, {
+    open: boolean;
+    documentHint: string;
+    note: string;
+    loading: boolean;
+    error: string | null;
+    updatedAnswer?: {
+      answer: string;
+      confidence: string;
+      evidence?: string;
+    } | null;
+    stillGap: boolean;
+  }>>({});
 
   const missingRunId = !runId || runId === "undefined";
   const displayProcessError = processError ?? (missingRunId ? "Missing runId" : null);
@@ -306,6 +319,85 @@ export default function RunResultsPage() {
   const report = (run.status === "completed" || run.status === "failed")
     ? buildReportDisplay(run, findings)
     : null;
+  const dealsenseSummary = report?.dealsenseSummary;
+
+  async function handleClarifyGap(questionId: string) {
+    setClarifyState((prev) => {
+      const current = prev[questionId] ?? {
+        open: false,
+        documentHint: "",
+        note: "",
+        loading: false,
+        error: null,
+        updatedAnswer: null,
+        stillGap: false,
+      };
+      return {
+        ...prev,
+        [questionId]: { ...current, open: !current.open, error: null },
+      };
+    });
+  }
+
+  async function handleSubmitClarify(questionId: string) {
+    const state = clarifyState[questionId];
+    if (!state || state.loading) return;
+
+    setClarifyState((prev) => ({
+      ...prev,
+      [questionId]: { ...(prev[questionId] ?? state), loading: true, error: null },
+    }));
+
+    try {
+      const res = await fetch(`/api/dealsense/runs/${runId}/process`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          question_id: questionId,
+          document_hint: state.documentHint,
+          note: state.note,
+        }),
+      });
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => "Unable to read error");
+        throw new Error(text || "Failed to recheck with DealSense.");
+      }
+
+      const data = await res.json().catch(() => ({}));
+      const updated = !!data.updated;
+      const answer = data.answer;
+
+      setClarifyState((prev) => ({
+        ...prev,
+        [questionId]: {
+          ...(prev[questionId] ?? state),
+          loading: false,
+          updatedAnswer: answer
+            ? {
+                answer: typeof answer.answer === "string" ? answer.answer : "",
+                confidence: typeof answer.confidence === "string" ? answer.confidence : "",
+                evidence: typeof answer.evidence === "string" ? answer.evidence : undefined,
+              }
+            : null,
+          stillGap: !updated,
+          open: true,
+          error: null,
+        },
+      }));
+    } catch (err) {
+      setClarifyState((prev) => ({
+        ...prev,
+        [questionId]: {
+          ...(prev[questionId] ?? state),
+          loading: false,
+          error: err instanceof Error ? err.message : "Failed to recheck with DealSense.",
+        },
+      }));
+    }
+  }
 
   const dealSummary = (run.deal_summary_data && typeof run.deal_summary_data === "object")
     ? (run.deal_summary_data as any)
@@ -601,6 +693,156 @@ export default function RunResultsPage() {
                   <li key={idx}>{s}</li>
                 ))}
               </ul>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* DealSense question summary – what DealSense understands vs gaps */}
+      {dealsenseSummary && (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
+          <h2 className="text-base font-semibold text-slate-900 mb-2">DealSense summary</h2>
+          {dealsenseSummary.summary && (
+            <p className="text-sm text-slate-600 mb-4 leading-relaxed">
+              {dealsenseSummary.summary}
+            </p>
+          )}
+
+          {dealsenseSummary.keyFacts && dealsenseSummary.keyFacts.length > 0 && (
+            <div className="mb-4">
+              <h3 className="text-sm font-semibold text-slate-800 mb-2">Key deal facts</h3>
+              <div className="space-y-1 text-sm text-slate-700">
+                {dealsenseSummary.keyFacts.map((fact, idx) => (
+                  <div
+                    key={idx}
+                    className="flex items-start gap-2"
+                  >
+                    <div className="w-52 shrink-0 text-slate-500 font-semibold">
+                      {fact.label}
+                    </div>
+                    <div className="flex-1 leading-snug">
+                      {fact.value}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {dealsenseSummary.informationGaps && dealsenseSummary.informationGaps.length > 0 && (
+            <div>
+              <h3 className="text-sm font-semibold text-amber-800 mb-2">Information gaps</h3>
+              <div className="space-y-3 text-sm text-slate-700">
+                {dealsenseSummary.informationGaps.map((gap, idx) => {
+                  const state = clarifyState[gap.question_id] ?? {
+                    open: false,
+                    documentHint: "",
+                    note: "",
+                    loading: false,
+                    error: null,
+                    updatedAnswer: null,
+                    stillGap: false,
+                  };
+                  return (
+                    <div
+                      key={gap.question_id ?? idx}
+                      className="border border-amber-100 rounded-lg p-3 bg-amber-50/40"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="font-medium text-slate-800">{gap.label}</div>
+                          {state.updatedAnswer && !state.stillGap && (
+                            <p className="text-xs text-slate-600 mt-1">
+                              <span className="font-semibold">DealSense (recheck):</span>{" "}
+                              {state.updatedAnswer.answer || "Updated answer recorded."}{" "}
+                              {state.updatedAnswer.confidence && (
+                                <span className="text-slate-500">
+                                  (Confidence: {state.updatedAnswer.confidence.toLowerCase()})
+                                </span>
+                              )}
+                              {state.updatedAnswer.evidence && (
+                                <span className="text-slate-500">
+                                  {" "}
+                                  — Evidence: {state.updatedAnswer.evidence}
+                                </span>
+                              )}
+                            </p>
+                          )}
+                          {state.stillGap && (
+                            <p className="text-xs text-slate-600 mt-1">
+                              DealSense still could not confirm this from the referenced material.
+                            </p>
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleClarifyGap(gap.question_id)}
+                          className="text-xs font-semibold text-indigo-700 hover:text-indigo-900"
+                        >
+                          {state.open ? "Close" : "Help DealSense locate this"}
+                        </button>
+                      </div>
+                      {state.open && (
+                        <div className="mt-3 space-y-2">
+                          <div>
+                            <label className="block text-xs font-medium text-slate-600 mb-1">
+                              Document name or hint
+                            </label>
+                            <input
+                              type="text"
+                              value={state.documentHint}
+                              onChange={(e) =>
+                                setClarifyState((prev) => ({
+                                  ...prev,
+                                  [gap.question_id]: {
+                                    ...(prev[gap.question_id] ?? state),
+                                    documentHint: e.target.value,
+                                  },
+                                }))
+                              }
+                              className="w-full rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500"
+                              placeholder="e.g. Statement_of_Position.pdf or 'SPA page 4'"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-slate-600 mb-1">
+                              Note to DealSense
+                            </label>
+                            <textarea
+                              value={state.note}
+                              onChange={(e) =>
+                                setClarifyState((prev) => ({
+                                  ...prev,
+                                  [gap.question_id]: {
+                                    ...(prev[gap.question_id] ?? state),
+                                    note: e.target.value,
+                                  },
+                                }))
+                              }
+                              rows={3}
+                              className="w-full rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500"
+                              placeholder="e.g. Equity contribution is $800k from director personal funds in Statement_of_Position.pdf"
+                            />
+                          </div>
+                          {state.error && (
+                            <p className="text-xs text-rose-700">{state.error}</p>
+                          )}
+                          <div className="flex justify-end">
+                            <button
+                              type="button"
+                              onClick={() => handleSubmitClarify(gap.question_id)}
+                              disabled={state.loading}
+                              className="inline-flex items-center px-3 py-1.5 rounded-md border border-indigo-600 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 disabled:opacity-60 disabled:cursor-not-allowed"
+                            >
+                              {state.loading ? "Rechecking…" : "Recheck with DealSense"}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
         </div>

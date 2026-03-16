@@ -3,6 +3,7 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { computeFindings, type Party } from "@/lib/dealsense/runChecks";
 import { extractDealSummaryData } from "@/lib/dealsense/extractDealSummaryData";
 import { renderDealSummary } from "@/lib/dealsense/renderDealSummary";
+import { DEALSENSE_QUESTIONS } from "@/lib/dealsense/questions";
 
 type FileRow = {
   id?: string;
@@ -14,41 +15,32 @@ type FileRow = {
   doc_type?: string | null;
 };
 
-type AiClarificationFinding = {
-  finding_id: string;
-  title: string;
-  severity: "warning" | "info";
-  status: "open" | "addressed";
-  question: string;
-  why_it_matters: string;
-  what_ai_found: string;
-  recommended_broker_action: string;
-  evidence: unknown[];
+type DealSenseQuestionAnswer = {
+  question_id: string;
+  answer: string;
+  confidence: "high" | "medium" | "low";
+  evidence: string;
+  value?: number;
+  currency?: string;
+  unit?: string;
+  metrics?: Record<string, unknown>;
 };
 
-type AiCompletenessFinding = {
-  finding_id: string;
-  title: string;
-  severity: "warning" | "info";
-  message: string;
-  fix: string;
-};
-
-const AI_COMPLETENESS_MAX_FINDINGS = 8;
 const AI_EXTRACT_PREVIEW_CHARS = 4000;
-const AI_COMPLETENESS_MODEL = "gpt-4o-mini";
-const AI_CLARIFICATION_MODEL = "gpt-4o-mini";
-const AI_FINDING_ID_REGEX = /^ai_[a-z0-9_]+$/;
+const AI_QUESTIONS_MODEL = "gpt-4o-mini";
+const COULD_NOT_DETERMINE = "DealSense could not determine this from the documents provided";
 
-function mapAiSeverityToDb(severity: string): "warning" | "info" {
-  if (severity === "critical" || severity === "active") return "warning";
-  return "info";
+function isMissingOrLowConfidence(a: DealSenseQuestionAnswer): boolean {
+  const lowConfidence = a.confidence === "low";
+  const missing =
+    !a.answer?.trim() ||
+    a.answer.toLowerCase().includes("could not determine");
+  return lowConfidence || missing;
 }
 
-async function generateAiCompletenessFindings(
-  submissionId: string,
+async function generateDealSenseQuestionAnswers(
   files: FileRow[]
-): Promise<AiCompletenessFinding[]> {
+): Promise<DealSenseQuestionAnswer[]> {
   const filePreviews = files.map((f) => {
     const text = (f.extracted_text ?? "").trim();
     const hasText = text.length > 0;
@@ -61,23 +53,40 @@ async function generateAiCompletenessFindings(
   });
   const contextBlock =
     filePreviews.length > 0 ? JSON.stringify(filePreviews, null, 2) : "No files available.";
-  const submissionContext = JSON.stringify({ submission_id: submissionId });
 
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
-    console.log("[DealSense Process AI][completeness] OPENAI_API_KEY not set; skipping AI completeness.");
+    console.log("[DealSense Process AI][questions] OPENAI_API_KEY not set; skipping.");
     return [];
   }
 
-  const systemPrompt = `You are a Deal Pack Completeness Reviewer. Identify only MISSING INFORMATION or UNCLEAR CONTEXT. Do NOT assess credit quality, risk, or approval likelihood.
+  const questionsBlock = DEALSENSE_QUESTIONS.map(
+    (q) => `- ${q.id}: ${q.question}`
+  ).join("\n");
 
-Output only valid JSON, no markdown. Use this exact finding structure:
-{"findings": [{"finding_id": "<slug>", "title": "<short title>", "severity": "critical"|"active"|"info", "explanation": "<why this is a gap>", "fix": "<what to provide or clarify>", "evidence": []}]}
-Severity: "critical" = deal cannot proceed; "active" = likely lender follow-up; "info" = minor clarification.
-Use finding_id slugs like ai_missing_purpose, ai_missing_ownership_chart, ai_missing_loan_purpose, ai_missing_borrower_structure, ai_missing_security_details, ai_missing_use_of_funds, ai_missing_repayment_source, ai_incomplete_context, ai_missing_key_dates, ai_unclear_terms.
-Return at most ${AI_COMPLETENESS_MAX_FINDINGS} findings. If nothing clearly missing, return {"findings": []}.`;
+  const systemPrompt = `You are DealSense, an AI credit analyst reviewing lending transaction documents.
 
-  const userPrompt = `Submission context: ${submissionContext}\n\nFile list and extracted text:\n${contextBlock}`;
+Using the provided document extracts, answer the following deal questions.
+
+For each question return:
+- answer
+- confidence (high/medium/low)
+- supporting evidence (document name or section)
+- OPTIONAL numeric fields where clearly identifiable:
+  - value (number, e.g. 1200000 for $1.2m)
+  - currency (e.g. "NZD", "AUD", "USD")
+  - unit (e.g. "amount", "revenue", "EBITDA", "forecast_revenue")
+- if information cannot be located, return "${COULD_NOT_DETERMINE}" as the answer and omit value/currency/unit.
+
+Additionally, for selected questions, include a compact metrics object when clearly identifiable:
+- For \"historical_financials\": metrics: { \"revenue\": number, \"gross_margin_percent\": number, \"ebitda\": number, \"period\": string, \"currency\": string }
+- For \"forecasts\": metrics: { \"forecast_revenue\": number, \"forecast_ebitda\": number, \"forecast_profit\": number, \"period\": string, \"currency\": string }
+- For \"bank_funding\": metrics: { \"min_value\": number, \"max_value\": number, \"currency\": string }
+
+Output ONLY valid JSON: an array of objects with keys: question_id, answer, confidence, evidence, and optional value, currency, unit, metrics.
+No markdown, no extra text. Example: [{"question_id":"purchase_price","answer":"$1,200,000","value":1200000,"currency":"NZD","confidence":"high","evidence":"Application.pdf","metrics":{}}]`;
+
+  const userPrompt = `Document extracts:\n${contextBlock}\n\nQuestions to answer (use question_id exactly as listed):\n${questionsBlock}\n\nReturn one object per question in the same order, with question_id, answer, confidence, evidence, and optional value/currency/unit where numeric values are clear. When metrics apply for historical_financials, forecasts, or bank_funding, include the metrics object as described in the system instructions.`;
 
   let raw: string;
   try {
@@ -85,87 +94,115 @@ Return at most ${AI_COMPLETENESS_MAX_FINDINGS} findings. If nothing clearly miss
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
-        model: AI_COMPLETENESS_MODEL,
+        model: AI_QUESTIONS_MODEL,
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt },
         ],
         temperature: 0.2,
-        max_tokens: 2048,
+        max_tokens: 4096,
       }),
     });
     if (!res.ok) {
-      console.log("[DealSense Process AI][completeness] OpenAI HTTP error:", res.status);
+      console.log("[DealSense Process AI][questions] OpenAI HTTP error:", res.status);
       return [];
     }
     const data = (await res.json().catch(() => null)) as { choices?: Array<{ message?: { content?: string } }> } | null;
     raw = data?.choices?.[0]?.message?.content?.trim() ?? "";
     if (!raw) {
-      console.log("[DealSense Process AI][completeness] Model returned empty content.");
+      console.log("[DealSense Process AI][questions] Model returned empty content.");
       return [];
     }
   } catch (err) {
     console.log(
-      "[DealSense Process AI][completeness] Error calling OpenAI, returning no findings:",
+      "[DealSense Process AI][questions] Error calling OpenAI:",
       err instanceof Error ? err.message : err
     );
     return [];
   }
 
-  let parsed: { findings?: unknown[] };
+  let parsed: unknown;
   try {
-    const cleaned = raw.replace(/^[\s\S]*?(\{[\s\S]*\})[\s\S]*$/m, "$1").trim();
-    parsed = JSON.parse(cleaned) as { findings?: unknown[] };
+    const cleaned = raw.replace(/^[\s\S]*?(\[[\s\S]*\])[\s\S]*$/m, "$1").trim();
+    parsed = JSON.parse(cleaned) as unknown;
   } catch {
-    console.log("[DealSense Process AI][completeness] JSON parse failed; returning no findings.");
+    console.log("[DealSense Process AI][questions] JSON parse failed.");
     return [];
   }
 
-  const arr = Array.isArray(parsed.findings) ? parsed.findings : [];
-  const out: {
-    finding_id: string;
-    title: string;
-    severity: "warning" | "info";
-    message: string;
-    fix: string;
-  }[] = [];
-  for (let i = 0; i < Math.min(arr.length, AI_COMPLETENESS_MAX_FINDINGS); i++) {
-    const f = arr[i];
-    if (!f || typeof f !== "object") continue;
-    const o = f as Record<string, unknown>;
-    const finding_id = typeof o.finding_id === "string" ? o.finding_id.trim() : "";
-    if (!finding_id || !AI_FINDING_ID_REGEX.test(finding_id)) continue;
-    const title = typeof o.title === "string" ? o.title.trim() : "";
-    if (!title) continue;
-    const severityRaw = typeof o.severity === "string" ? o.severity : "info";
-    const severity = mapAiSeverityToDb(severityRaw);
-    const explanation = typeof o.explanation === "string" ? o.explanation : "";
-    const fix = typeof o.fix === "string" ? o.fix : "";
-    out.push({
-      finding_id,
-      title,
-      severity,
-      message: explanation || title,
-      fix: fix || "Review and provide clarification.",
-    });
-  }
-  if (out.length === 0) {
-    console.log("[DealSense Process AI][completeness] Parsed 0 findings from model output.");
+  const arr = Array.isArray(parsed) ? parsed : [];
+  const idSet: Set<string> = new Set(DEALSENSE_QUESTIONS.map((q) => q.id));
+  const out: DealSenseQuestionAnswer[] = [];
+  for (let i = 0; i < arr.length; i++) {
+    const o = arr[i];
+    if (!o || typeof o !== "object") continue;
+    const r = o as Record<string, unknown>;
+    const question_id = typeof r.question_id === "string" ? r.question_id.trim() : "";
+    if (!question_id || !idSet.has(question_id)) continue;
+    const answer = typeof r.answer === "string" ? r.answer.trim() : "";
+    const confidenceRaw = typeof r.confidence === "string" ? r.confidence.toLowerCase() : "";
+    const confidence: DealSenseQuestionAnswer["confidence"] =
+      confidenceRaw === "high" ? "high" : confidenceRaw === "medium" ? "medium" : "low";
+    const evidence = typeof r.evidence === "string" ? r.evidence.trim() : "";
+    const value =
+      typeof r.value === "number" && Number.isFinite(r.value as number)
+        ? (r.value as number)
+        : undefined;
+    const currency =
+      typeof r.currency === "string" && r.currency.trim() ? r.currency.trim() : undefined;
+    const unit = typeof r.unit === "string" && r.unit.trim() ? r.unit.trim() : undefined;
+    const metrics =
+      r.metrics && typeof r.metrics === "object" && r.metrics !== null
+        ? (r.metrics as Record<string, unknown>)
+        : undefined;
+    out.push({ question_id, answer, confidence, evidence, value, currency, unit, metrics });
   }
   return out;
 }
 
-async function generateAiClarificationAnalysis(
-  submissionId: string,
+function questionAnswersToFindings(
+  answers: DealSenseQuestionAnswer[]
+): Array<{ finding_id: string; title: string; severity: "warning"; message: string; fix: string }> {
+  const byId: Map<string, (typeof DEALSENSE_QUESTIONS)[number]> = new Map(
+    DEALSENSE_QUESTIONS.map((q) => [q.id, q] as const)
+  );
+  const findings: Array<{
+    finding_id: string;
+    title: string;
+    severity: "warning";
+    message: string;
+    fix: string;
+  }> = [];
+  for (const a of answers) {
+    if (!isMissingOrLowConfidence(a)) continue;
+    const q = byId.get(a.question_id);
+    const questionSummary = q ? q.question : a.question_id;
+    const title = `DealSense could not determine: ${questionSummary}`;
+    findings.push({
+      finding_id: `dealsense_q_${a.question_id}`,
+      title,
+      severity: "warning",
+      message: a.answer || title,
+      fix: "Provide supporting documents or clarify in the pack.",
+    });
+  }
+  return findings;
+}
+
+async function generateDealSenseSingleQuestionAnswer(
   files: FileRow[],
-  purposeType: string
-): Promise<{ executive_summary: string; findings: AiClarificationFinding[] }> {
+  questionId: string,
+  documentHint: string | undefined,
+  note: string | undefined
+): Promise<DealSenseQuestionAnswer | null> {
+  const question = DEALSENSE_QUESTIONS.find((q) => q.id === questionId);
+  if (!question) return null;
+
   const filePreviews = files.map((f) => {
     const text = (f.extracted_text ?? "").trim();
     const hasText = text.length > 0;
     return {
       id: f.id ?? "",
-      category: f.category ?? "",
       display_name: f.display_name ?? f.original_filename ?? "Unknown",
       has_extracted_text: hasText,
       extracted_text: hasText ? text.slice(0, AI_EXTRACT_PREVIEW_CHARS) : "",
@@ -173,57 +210,53 @@ async function generateAiClarificationAnalysis(
   });
   const contextBlock =
     filePreviews.length > 0 ? JSON.stringify(filePreviews, null, 2) : "No files available.";
-  const submissionContext = JSON.stringify({ submission_id: submissionId, purpose_type: purposeType ?? "other" });
 
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
-    console.log("[DealSense Process AI][clarification] OPENAI_API_KEY not set; skipping AI clarification.");
-    return { executive_summary: "", findings: [] };
+    console.log("[DealSense Process AI][question_recheck] OPENAI_API_KEY not set; skipping.");
+    return null;
   }
 
-  const systemPrompt = `You are analysing a broker's business lending submission pack BEFORE a bank or lender reviews it.
+  const guidanceParts: string[] = [];
+  if (documentHint && documentHint.trim()) {
+    guidanceParts.push(
+      `Prioritise any content from documents matching or similar to: "${documentHint.trim()}".`
+    );
+  }
+  if (note && note.trim()) {
+    guidanceParts.push(
+      `Broker note (treat as guidance only, do not override documents if inconsistent): "${note.trim()}".`
+    );
+  }
+  const guidanceBlock =
+    guidanceParts.length > 0 ? guidanceParts.join(" ") : "Use your best judgement from the documents.";
 
-Your job:
-- Identify LIKELY lender clarification questions or follow-up points.
-- Focus on information gaps, unresolved ambiguities, internal inconsistencies, or unusual items.
-- Distinguish clearly between:
-  - "open" clarification issues where the pack does NOT clearly address the question.
-  - "addressed" items where the pack appears to cover the issue but it is still worth explicitly pointing out.
+  const systemPrompt = `You are DealSense, an AI credit analyst reviewing lending transaction documents.
 
-Very important constraints:
-- Do NOT assess credit worthiness, risk appetite, or approval likelihood.
-- Do NOT estimate probability of approval or pricing.
-- Do NOT give a credit recommendation.
-- Avoid duplicating simple checklist-style "missing file" issues – those are handled by separate rules.
-- Use ONLY the submission context and the uploaded file names, categories, and extracted text previews.
+You are rechecking ONE specific information gap for a broker.
 
-Output STRICT JSON ONLY with this EXACT shape:
-{
-  "executive_summary": "string",
-  "findings": [
-    {
-      "finding_id": "ai_clarify_<slug>",
-      "title": "string",
-      "severity": "warning" | "info",
-      "status": "open" | "addressed",
-      "question": "string",
-      "why_it_matters": "string",
-      "what_ai_found": "string",
-      "recommended_broker_action": "string",
-      "evidence": []
-    }
-  ]
-}
+Question:
+- ${question.id}: ${question.question}
 
-Rules:
-- Return AT MOST 8 findings.
-- Use finding_id values like ai_clarify_working_capital_gaps, ai_clarify_security_explained, ai_clarify_related_party_loans.
-- If nothing material is found, return an informative executive_summary and "findings": [].`;
+Broker guidance:
+${guidanceBlock}
 
-  const userPrompt = `Submission context: ${submissionContext}
+Using ONLY the provided document extracts (and the broker guidance as context), answer this question.
 
-File list, categories, and extracted text previews:
-${contextBlock}`;
+Return:
+- answer
+- confidence (high/medium/low)
+- supporting evidence (document name or section)
+- OPTIONAL numeric fields where clearly identifiable:
+  - value (number, e.g. 1200000 for $1.2m)
+  - currency (e.g. "NZD", "AUD", "USD")
+  - unit (e.g. "amount", "revenue", "EBITDA", "forecast_revenue")
+- if information cannot be located in the documents, return "${COULD_NOT_DETERMINE}" as the answer and omit value/currency/unit.
+
+Output ONLY valid JSON with shape:
+{"question_id": "${question.id}", "answer": "...", "confidence": "high"|"medium"|"low", "evidence": "...", "value": 1200000, "currency": "NZD", "unit": "amount", "metrics": {}}`;
+
+  const userPrompt = `Document extracts:\n${contextBlock}`;
 
   let raw: string;
   try {
@@ -231,80 +264,67 @@ ${contextBlock}`;
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
-        model: AI_CLARIFICATION_MODEL,
+        model: AI_QUESTIONS_MODEL,
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt },
         ],
         temperature: 0.2,
-        max_tokens: 2048,
+        max_tokens: 1024,
       }),
     });
     if (!res.ok) {
-      console.log("[DealSense Process AI][clarification] OpenAI HTTP error:", res.status);
-      return { executive_summary: "", findings: [] };
+      console.log("[DealSense Process AI][question_recheck] OpenAI HTTP error:", res.status);
+      return null;
     }
-    const data = (await res.json().catch(() => null)) as { choices?: Array<{ message?: { content?: string } }> } | null;
+    const data = (await res.json().catch(() => null)) as {
+      choices?: Array<{ message?: { content?: string } }>;
+    } | null;
     raw = data?.choices?.[0]?.message?.content?.trim() ?? "";
     if (!raw) {
-      console.log("[DealSense Process AI][clarification] Model returned empty content.");
-      return { executive_summary: "", findings: [] };
+      console.log("[DealSense Process AI][question_recheck] Model returned empty content.");
+      return null;
     }
   } catch (err) {
     console.log(
-      "[DealSense Process AI][clarification] Error calling OpenAI, returning no findings:",
+      "[DealSense Process AI][question_recheck] Error calling OpenAI:",
       err instanceof Error ? err.message : err
     );
-    return { executive_summary: "", findings: [] };
+    return null;
   }
 
-  let parsed: { executive_summary?: unknown; findings?: unknown };
+  let parsed: any;
   try {
-    const cleaned = raw.replace(/^[\s\S]*?(\{[\s\S]*\})[\s\S]*$/m, "$1").trim();
-    parsed = JSON.parse(cleaned) as { executive_summary?: unknown; findings?: unknown };
+    const cleaned = raw.replace(/^[\\s\\S]*?(\\{[\\s\\S]*\\})[\\s\\S]*$/m, "$1").trim();
+    parsed = JSON.parse(cleaned) as any;
   } catch {
-    console.log("[DealSense Process AI][clarification] JSON parse failed; returning no findings.");
-    return { executive_summary: "", findings: [] };
+    console.log("[DealSense Process AI][question_recheck] JSON parse failed.");
+    return null;
   }
 
-  const execSummary = typeof parsed.executive_summary === "string" ? parsed.executive_summary.trim() : "";
-  const arr = Array.isArray(parsed.findings) ? parsed.findings : [];
+  const qid = typeof parsed?.question_id === "string" ? parsed.question_id.trim() : "";
+  if (!qid || qid !== question.id) return null;
+  const answer = typeof parsed?.answer === "string" ? parsed.answer.trim() : "";
+  const confidenceRaw = typeof parsed?.confidence === "string" ? parsed.confidence.toLowerCase() : "";
+  const confidence: DealSenseQuestionAnswer["confidence"] =
+    confidenceRaw === "high" ? "high" : confidenceRaw === "medium" ? "medium" : "low";
+  const evidence = typeof parsed?.evidence === "string" ? parsed.evidence.trim() : "";
+  const value =
+    typeof parsed?.value === "number" && Number.isFinite(parsed.value)
+      ? (parsed.value as number)
+      : undefined;
+  const currency =
+    typeof parsed?.currency === "string" && parsed.currency.trim()
+      ? parsed.currency.trim()
+      : undefined;
+  const unit =
+    typeof parsed?.unit === "string" && parsed.unit.trim() ? parsed.unit.trim() : undefined;
+  const metrics =
+    parsed?.metrics && typeof parsed.metrics === "object" && parsed.metrics !== null
+      ? (parsed.metrics as Record<string, unknown>)
+      : undefined;
 
-  const findings: AiClarificationFinding[] = [];
-  for (let i = 0; i < Math.min(arr.length, AI_COMPLETENESS_MAX_FINDINGS); i++) {
-    const f = arr[i];
-    if (!f || typeof f !== "object") continue;
-    const obj = f as Record<string, unknown>;
-    const finding_id = typeof obj.finding_id === "string" ? obj.finding_id.trim() : "";
-    if (!finding_id || !finding_id.startsWith("ai_clarify_")) continue;
-    const title = typeof obj.title === "string" ? obj.title.trim() : "";
-    if (!title) continue;
-    const severity = obj.severity === "warning" ? "warning" : "info";
-    const status = obj.status === "addressed" ? "addressed" : "open";
-    const question = typeof obj.question === "string" ? obj.question.trim() : "";
-    const why_it_matters = typeof obj.why_it_matters === "string" ? obj.why_it_matters.trim() : "";
-    const what_ai_found = typeof obj.what_ai_found === "string" ? obj.what_ai_found.trim() : "";
-    const recommended_broker_action =
-      typeof obj.recommended_broker_action === "string" ? obj.recommended_broker_action.trim() : "";
-    const evidence = Array.isArray(obj.evidence) ? obj.evidence : [];
-
-    findings.push({
-      finding_id,
-      title,
-      severity,
-      status,
-      question,
-      why_it_matters,
-      what_ai_found,
-      recommended_broker_action,
-      evidence,
-    });
-  }
-
-  if (findings.length === 0) {
-    console.log("[DealSense Process AI][clarification] Parsed 0 findings from model output.");
-  }
-  return { executive_summary: execSummary, findings };
+  return { question_id: question.id, answer, confidence, evidence, value, currency, unit, metrics };
 }
 
 export async function GET(_req: NextRequest) {
@@ -532,62 +552,29 @@ export async function POST(
 
     console.log("[DealSense] summary debug", summary);
 
-    // AI findings (completeness + clarification)
-    let aiCompletenessFindings: Awaited<ReturnType<typeof generateAiCompletenessFindings>> = [];
-    let aiClarificationFindings: AiClarificationFinding[] = [];
-    let aiClarificationExecutiveSummary = "";
+    // AI findings: DealSense Question Engine (answer deal questions; low confidence/missing → findings)
+    let dealSenseQuestionAnswers: DealSenseQuestionAnswer[] = [];
+    let dealSenseQuestionFindings: Array<{
+      finding_id: string;
+      title: string;
+      severity: "warning";
+      message: string;
+      fix: string;
+    }> = [];
 
     try {
-      console.log("[DealSense Process AI][completeness] Calling generateAiCompletenessFindings:", {
-        submissionId: run.submission_id,
-        purposeType,
-      });
-      aiCompletenessFindings = await generateAiCompletenessFindings(run.submission_id, aiFiles);
+      console.log("[DealSense Process AI][questions] Calling generateDealSenseQuestionAnswers");
+      dealSenseQuestionAnswers = await generateDealSenseQuestionAnswers(aiFiles);
+      dealSenseQuestionFindings = questionAnswersToFindings(dealSenseQuestionAnswers);
       console.log(
-        "[DealSense Process AI][completeness] Findings count:",
-        aiCompletenessFindings.length
+        "[DealSense Process AI][questions] Answers:",
+        dealSenseQuestionAnswers.length,
+        "Findings from low/missing:",
+        dealSenseQuestionFindings.length
       );
-      console.log(
-        "[DealSense Process AI][completeness] Finding IDs:",
-        aiCompletenessFindings.map((f) => f.finding_id)
-      );
-      if (aiCompletenessFindings.length === 0) {
-        console.log("[DealSense Process AI][completeness] No AI completeness findings returned.");
-      }
     } catch (err) {
       console.error(
-        "[DealSense Process API] AI completeness failed:",
-        err instanceof Error ? err.message : err
-      );
-    }
-
-    try {
-      console.log("[DealSense Process AI][clarification] Calling generateAiClarificationAnalysis:", {
-        submissionId: run.submission_id,
-        purposeType,
-      });
-      const clar = await generateAiClarificationAnalysis(run.submission_id, aiFiles, purposeType);
-      aiClarificationFindings = clar.findings;
-      aiClarificationExecutiveSummary = clar.executive_summary;
-      console.log(
-        "[DealSense Process AI][clarification] Executive summary:",
-        aiClarificationExecutiveSummary
-      );
-      console.log(
-        "[DealSense Process AI][clarification] Findings count:",
-        aiClarificationFindings.length
-      );
-      console.log(
-        "[DealSense Process AI][clarification] Finding IDs:",
-        aiClarificationFindings.map((f) => f.finding_id)
-      );
-      if (aiClarificationFindings.length === 0) {
-        console.log("[DealSense Process AI][clarification] No AI clarification findings returned.");
-      }
-      // TODO: store aiClarificationExecutiveSummary on submission_runs or a dedicated analysis table
-    } catch (err) {
-      console.error(
-        "[DealSense Process API] AI clarification analysis failed:",
+        "[DealSense Process API] DealSense question engine failed:",
         err instanceof Error ? err.message : err
       );
     }
@@ -598,8 +585,7 @@ export async function POST(
       .delete()
       .eq("run_id", runId);
 
-    // Merge rule-based findings + AI completeness + AI clarification
-    const now = new Date().toISOString();
+    // Merge rule-based findings + DealSense question-engine findings (low/missing → clarification)
     const findingsToInsert = [
       ...findings.map((f) => ({
         run_id: finalRunId,
@@ -612,10 +598,10 @@ export async function POST(
         score_impact: f.scoreImpact,
         evidence: f.evidence ?? null,
       })),
-      ...aiCompletenessFindings.map((f) => ({
+      ...dealSenseQuestionFindings.map((f) => ({
         run_id: finalRunId,
         severity: f.severity,
-        category: "completeness" as const,
+        category: "clarification" as const,
         message: f.message,
         finding_id: f.finding_id,
         title: f.title,
@@ -623,28 +609,6 @@ export async function POST(
         score_impact: 0,
         evidence: [],
       })),
-      ...aiClarificationFindings.map((f) => {
-        const isAddressed = f.status === "addressed";
-        const baseMessage = f.question || f.title;
-        const message = isAddressed
-          ? `${baseMessage} (appears already addressed in the current pack.)`
-          : baseMessage;
-        return {
-          run_id: finalRunId,
-          severity: f.severity,
-          category: "clarification" as const,
-          message,
-          finding_id: f.finding_id,
-          title: f.title,
-          fix: f.recommended_broker_action || "Clarify this point for the lender.",
-          score_impact: 0,
-          evidence: [],
-          workflow_state: isAddressed ? "resolved" : "open",
-          acknowledged_at: null,
-          resolved_at: isAddressed ? now : null,
-          state_changed_at: now,
-        };
-      }),
     ];
 
     // DealSense structured summary extraction (typed JSON + deterministic render).
@@ -714,7 +678,12 @@ export async function POST(
       });
 
       if (extracted.ok) {
-        dealSummaryData = extracted.data;
+        // Attach DealSense question answers so the reporting layer can surface
+        // both what DealSense understands and remaining information gaps.
+        dealSummaryData = {
+          ...(extracted.data as any),
+          dealsense_questions: dealSenseQuestionAnswers,
+        };
         dealSummaryText = renderDealSummary(extracted.data, {
           ready_to_submit: summary.status === "ready" || summary.score >= 70,
           has_open_critical: hasOpenCritical,
@@ -788,6 +757,112 @@ export async function POST(
 
     return NextResponse.json(
       { error: "An unexpected error occurred while processing the run" },
+      { status: 500 }
+    );
+  }
+}
+
+export async function PATCH(
+  req: NextRequest,
+  context: { params: Promise<{ runId: string }> }
+) {
+  const { runId } = await context.params;
+
+  try {
+    const supabase = await createSupabaseServerClient();
+
+    // Check authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const body = await req.json().catch(() => null);
+    const questionId = typeof body?.question_id === "string" ? body.question_id.trim() : "";
+    const documentHint =
+      typeof body?.document_hint === "string" ? body.document_hint.trim() : "";
+    const note = typeof body?.note === "string" ? body.note.trim() : "";
+
+    if (!questionId) {
+      return NextResponse.json({ error: "Missing question_id" }, { status: 400 });
+    }
+
+    // Load run to ensure it exists and belongs to current user context
+    const { data: run, error: runError } = await supabase
+      .from("submission_runs")
+      .select("*")
+      .eq("id", runId)
+      .maybeSingle();
+
+    if (runError || !run) {
+      console.error("[DealSense Question Recheck] Error loading run:", { runId, runError });
+      return NextResponse.json({ error: "Failed to load run" }, { status: 500 });
+    }
+
+    // Fetch submission files (same filters as main run processing)
+    const { data: files, error: filesError } = await supabase
+      .from("submission_files")
+      .select("id, category, display_name, original_filename, extraction_status, extracted_text, doc_type")
+      .eq("submission_id", run.submission_id)
+      .eq("is_deleted", false);
+
+    if (filesError) {
+      console.error("[DealSense Question Recheck] Error loading files:", filesError);
+      return NextResponse.json({ error: "Failed to load files" }, { status: 500 });
+    }
+
+    const aiFiles = (files || []) as FileRow[];
+
+    const answer = await generateDealSenseSingleQuestionAnswer(
+      aiFiles,
+      questionId,
+      documentHint,
+      note
+    );
+
+    if (!answer) {
+      return NextResponse.json(
+        {
+          updated: false,
+          message: "DealSense still could not confirm this from the referenced material.",
+        },
+        { status: 200 }
+      );
+    }
+
+    const isStillGap =
+      !answer.answer?.trim() ||
+      answer.confidence === "low" ||
+      answer.answer.toLowerCase().includes("could not determine");
+
+    if (isStillGap) {
+      return NextResponse.json(
+        {
+          updated: false,
+          answer,
+          message: "DealSense still could not confirm this from the referenced material.",
+        },
+        { status: 200 }
+      );
+    }
+
+    // Narrow, non-persistent recheck: return improved answer to the client without
+    // mutating findings or stored summary data. The UI can treat this as an inline override.
+    return NextResponse.json(
+      {
+        updated: true,
+        answer,
+        message: "DealSense has refreshed this answer using the referenced material.",
+      },
+      { status: 200 }
+    );
+  } catch (err) {
+    console.error("[DealSense Question Recheck] Unexpected error:", err);
+    return NextResponse.json(
+      { error: "An unexpected error occurred while rechecking this question" },
       { status: 500 }
     );
   }
