@@ -78,10 +78,19 @@ For each question return:
   - unit (e.g. "amount", "revenue", "EBITDA", "forecast_revenue")
 - if information cannot be located, return "${COULD_NOT_DETERMINE}" as the answer and omit value/currency/unit.
 
+Purchase price guidance (question_id "purchase_price"):
+- Look for phrases such as: "purchase price", "acquisition price", "sale price", "transaction value", "business price", "vendor asking price", "agreed price", "purchase consideration".
+- Support common currency formats: "$1,200,000", "$1.2m", "1.2m", "NZD 1,200,000", "NZD1.2m".
+- When you see a clear total purchase price in the documents, return a numeric value (e.g. 1200000 for $1.2m) and the currency where possible.
+- If both the bank funding requested (question_id "bank_funding") and equity contribution (question_id "equity_contribution") appear as clear numeric amounts and no explicit purchase price is stated, you may infer purchase price as their sum.
+  - In this case, use medium or low confidence (<= 0.6), and make sure the inferred amount is plausible relative to other large transaction numbers (not orders of magnitude out of line).
+  - Clearly reflect in the natural-language answer that the purchase price is inferred from funding + equity.
+- Do NOT invent a purchase price when numbers are ambiguous or obviously inconsistent; prefer "${COULD_NOT_DETERMINE}" with low confidence instead.
+
 Additionally, for selected questions, include a compact metrics object when clearly identifiable:
-- For \"historical_financials\": metrics: { \"revenue\": number, \"gross_margin_percent\": number, \"ebitda\": number, \"period\": string, \"currency\": string }
-- For \"forecasts\": metrics: { \"forecast_revenue\": number, \"forecast_ebitda\": number, \"forecast_profit\": number, \"period\": string, \"currency\": string }
-- For \"bank_funding\": metrics: { \"min_value\": number, \"max_value\": number, \"currency\": string }
+- For "historical_financials": metrics: { "revenue": number, "gross_margin_percent": number, "ebitda": number, "period": string, "currency": string }
+- For "forecasts": metrics: { "forecast_revenue": number, "forecast_ebitda": number, "forecast_profit": number, "period": string, "currency": string }
+- For "bank_funding": metrics: { "min_value": number, "max_value": number, "currency": string }
 
 Output ONLY valid JSON: an array of objects with keys: question_id, answer, confidence, evidence, and optional value, currency, unit, metrics.
 No markdown, no extra text. Example: [{"question_id":"purchase_price","answer":"$1,200,000","value":1200000,"currency":"NZD","confidence":"high","evidence":"Application.pdf","metrics":{}}]`;

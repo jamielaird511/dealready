@@ -1,73 +1,158 @@
 "use client";
 
+import { useEffect, useState } from "react";
+import { useParams } from "next/navigation";
 import { useWizard } from "@/lib/dealWizard/wizardContext";
-import { PURPOSE_DOC_MATRIX, WIZARD_PURPOSE_LABELS, getDocLabel, type DocTypeId } from "@/lib/dealWizard/docMatrix";
-import type { DocTier, TaxPositionOption } from "@/lib/dealWizard/types";
+import { PURPOSE_DOC_MATRIX, WIZARD_PURPOSE_LABELS } from "@/lib/dealWizard/docMatrix";
+import {
+  REVIEW_DOC_TYPES,
+  categoryToReviewTypeId,
+  reviewTypeIdToCategory,
+  confidenceToLevel,
+  predictDocTypeFromFile,
+  type ReviewDocTypeId,
+  type ConfidenceLevel,
+} from "@/lib/dealWizard/reviewDocTypes";
+import type { TaxPositionOption } from "@/lib/dealWizard/types";
+import { supabaseBrowser } from "@/lib/supabaseBrowser";
 
-const TIER_LABELS: Record<DocTier, string> = { required: "Required", recommended: "Recommended", supporting: "Supporting" };
 const TAX_LABELS: Record<TaxPositionOption, string> = {
   confirmed_current: "Confirmed current (no arrears)",
   arrears_exist: "Arrears exist",
   not_confirmed: "Not confirmed",
 };
 
-function computeConfidence(state: ReturnType<typeof useWizard>["state"]): number {
-  const config = PURPOSE_DOC_MATRIX[state.purposeKey];
-  let score = 100;
-  const requiredIds = config.required;
-  const recommendedIds = config.recommended;
-  const missingRequired = requiredIds.filter((id) => !state.docUploaded[id] && !state.docMissing?.[id]).length;
-  const missingRecommended = recommendedIds.filter((id) => !state.docUploaded[id]).length;
-  score -= missingRequired * 8;
-  score -= missingRecommended * 2;
-  if (state.taxPosition === "not_confirmed") score -= 5;
-  if (state.taxPosition === "arrears_exist" && !state.taxExplanation.trim()) score -= 5;
-  return Math.max(0, Math.min(100, score));
+type FileRow = {
+  id: string;
+  filename: string;
+  category: string | null;
+  doc_type: string | null;
+  doc_type_confidence: number | null;
+  storage_path: string | null;
+};
+
+function ConfidenceBadge({ level }: { level: ConfidenceLevel }) {
+  const style =
+    level === "high"
+      ? "bg-emerald-100 text-emerald-800"
+      : level === "medium"
+        ? "bg-amber-100 text-amber-800"
+        : "bg-slate-100 text-slate-600";
+  return (
+    <span className={`rounded px-2 py-0.5 text-xs font-medium capitalize ${style}`}>
+      {level}
+    </span>
+  );
 }
 
 export default function WizardStep3Page() {
-  const { state, setDocMissing } = useWizard();
+  const routeParams = useParams();
+  const dealId = typeof routeParams?.id === "string" ? routeParams.id : Array.isArray(routeParams?.id) ? routeParams.id[0] : "";
+  const { state } = useWizard();
   const config = PURPOSE_DOC_MATRIX[state.purposeKey];
-  const confidence = computeConfidence(state);
 
-  const requiredUploaded = config.required.filter((id) => state.docUploaded[id]).length;
-  const requiredTotal = config.required.length;
-  const recommendedUploaded = config.recommended.filter((id) => state.docUploaded[id]).length;
-  const recommendedTotal = config.recommended.length;
-  const requiredReady = config.required.every((id) => state.docUploaded[id] || state.docMissing?.[id]);
+  const [files, setFiles] = useState<FileRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [removingId, setRemovingId] = useState<string | null>(null);
 
-  function DocRow({ id, tier }: { id: DocTypeId; tier: DocTier }) {
-    const uploaded = state.docUploaded[id];
-    const markedMissing = !!state.docMissing?.[id];
-    const status = uploaded ? "Uploaded" : markedMissing ? "Marked missing" : "Missing";
-    const pillClass = uploaded
-      ? "bg-emerald-100 text-emerald-800"
-      : markedMissing
-        ? "bg-slate-200 text-slate-700"
-        : "bg-amber-100 text-amber-800";
-    return (
-      <li className="flex items-center justify-between gap-2 py-1.5 text-sm">
-        <span className="font-medium text-slate-900">{getDocLabel(id)}</span>
-        <div className="flex items-center gap-2">
-          <span className={`rounded px-2 py-0.5 text-xs font-semibold ${pillClass}`}>{status}</span>
-          {tier === "required" && !uploaded && (
-            <button
-              type="button"
-              onClick={() => setDocMissing(id, !markedMissing)}
-              className="text-xs font-semibold text-indigo-600 hover:text-indigo-800"
-            >
-              {markedMissing ? "Unmark" : "Mark missing"}
-            </button>
-          )}
-        </div>
-      </li>
+  useEffect(() => {
+    if (!dealId) return;
+    let cancelled = false;
+    setLoading(true);
+    const supabase = supabaseBrowser();
+    supabase
+      .from("submissions")
+      .select("id")
+      .eq("deal_id", dealId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+      .then(({ data: sub }) => {
+        if (cancelled || !sub?.id) {
+          if (!cancelled) {
+            setFiles([]);
+            setLoading(false);
+          }
+          return;
+        }
+        return supabase
+          .from("submission_files")
+          .select("id, original_filename, display_name, category, doc_type, doc_type_confidence, storage_path")
+          .eq("submission_id", sub.id)
+          .eq("is_deleted", false)
+          .order("created_at", { ascending: false });
+      })
+      .then((res) => {
+        if (cancelled) {
+          setLoading(false);
+          return;
+        }
+        if (res?.data) {
+          const rows = (res.data as {
+            id?: string;
+            original_filename?: string | null;
+            display_name?: string | null;
+            category?: string | null;
+            doc_type?: string | null;
+            doc_type_confidence?: number | null;
+            storage_path?: string | null;
+          }[]).map((f) => ({
+            id: f.id ?? "",
+            filename: (f.original_filename || f.display_name || "File") ?? "File",
+            category: f.category ?? null,
+            doc_type: f.doc_type ?? null,
+            doc_type_confidence: f.doc_type_confidence ?? null,
+            storage_path: f.storage_path ?? null,
+          }));
+          setFiles(rows);
+        }
+        setLoading(false);
+      })
+      .catch(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [dealId]);
+
+  async function handleTypeChange(fileId: string, reviewTypeId: ReviewDocTypeId) {
+    if (updatingId) return;
+    setUpdatingId(fileId);
+    const category = reviewTypeIdToCategory(reviewTypeId);
+    const supabase = supabaseBrowser();
+    const { error } = await supabase
+      .from("submission_files")
+      .update({ category })
+      .eq("id", fileId);
+    setUpdatingId(null);
+    if (error) {
+      return;
+    }
+    setFiles((prev) =>
+      prev.map((f) => (f.id === fileId ? { ...f, category } : f))
     );
+  }
+
+  async function handleRemove(fileId: string) {
+    if (removingId) return;
+    setRemovingId(fileId);
+    const supabase = supabaseBrowser();
+    await supabase
+      .from("submission_files")
+      .update({ is_deleted: true, deleted_at: new Date().toISOString() })
+      .eq("id", fileId);
+    setRemovingId(null);
+    setFiles((prev) => prev.filter((f) => f.id !== fileId));
   }
 
   return (
     <div className="space-y-8">
       <h1 className="text-2xl font-bold text-slate-900">Review</h1>
-      <p className="text-slate-600">Summary and analysis confidence before running DealSense.</p>
+      <p className="text-slate-600">
+        Confirm document types for each file. DealReady suggests; you confirm or change.
+      </p>
 
       <section className="rounded-lg border border-slate-200 bg-white p-4">
         <h2 className="text-sm font-bold text-slate-900 mb-2">Basics</h2>
@@ -92,29 +177,71 @@ export default function WizardStep3Page() {
       </section>
 
       <section className="rounded-lg border border-slate-200 bg-white p-4">
-        <h2 className="text-sm font-bold text-slate-900 mb-2">Document checklist</h2>
-        <p className="text-sm text-slate-600 mb-3">
-          Required: {requiredUploaded}/{requiredTotal} uploaded — Recommended: {recommendedUploaded}/{recommendedTotal} uploaded
+        <h2 className="text-sm font-bold text-slate-900 mb-1">Document types</h2>
+        <p className="text-sm text-slate-600 mb-4">
+          Review or change the suggested type for each file. You can leave any file as Other.
         </p>
-        {!requiredReady && (
-          <p className="text-sm text-amber-700 mb-3">Upload or mark missing all required documents to proceed.</p>
+        {loading ? (
+          <p className="text-sm text-slate-500">Loading files…</p>
+        ) : files.length === 0 ? (
+          <p className="text-sm text-slate-500">No files in this pack. Add documents in the previous step.</p>
+        ) : (
+          <ul className="space-y-3">
+            {files.map((file) => {
+              const predicted = predictDocTypeFromFile(
+                file.filename,
+                file.category,
+                file.doc_type,
+                null
+              );
+              const savedTypeId = categoryToReviewTypeId(file.category, file.doc_type);
+              const confidenceLevel = file.doc_type_confidence != null
+                ? confidenceToLevel(file.doc_type_confidence)
+                : predicted.confidence;
+              const suggestedLabel = savedTypeId === "other" && predicted.typeId !== "other"
+                ? REVIEW_DOC_TYPES.find((t) => t.id === predicted.typeId)?.label
+                : null;
+              return (
+                <li
+                  key={file.id}
+                  className="flex flex-wrap items-center gap-3 rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2"
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium text-slate-900 truncate">{file.filename}</p>
+                    <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                      <ConfidenceBadge level={confidenceLevel} />
+                      {suggestedLabel && (
+                        <span className="text-xs text-slate-500">Suggested: {suggestedLabel}</span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <select
+                      value={savedTypeId}
+                      onChange={(e) => handleTypeChange(file.id, e.target.value as ReviewDocTypeId)}
+                      disabled={updatingId === file.id}
+                      className="rounded border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-800 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 disabled:opacity-50"
+                    >
+                      {REVIEW_DOC_TYPES.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.label}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => handleRemove(file.id)}
+                      disabled={removingId === file.id}
+                      className="text-xs font-semibold text-red-600 hover:text-red-800 disabled:opacity-50"
+                    >
+                      {removingId === file.id ? "Removing…" : "Remove"}
+                    </button>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
         )}
-        <div className="space-y-4">
-          {(["required", "recommended", "supporting"] as const).map((tier) => {
-            const ids = config[tier] as DocTypeId[];
-            if (ids.length === 0) return null;
-            return (
-              <div key={tier}>
-                <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">{TIER_LABELS[tier]}</h3>
-                <ul className="list-none space-y-0">
-                  {ids.map((id) => (
-                    <DocRow key={id} id={id} tier={tier} />
-                  ))}
-                </ul>
-              </div>
-            );
-          })}
-        </div>
       </section>
 
       {config.taxPositionApplicable && (
@@ -130,10 +257,9 @@ export default function WizardStep3Page() {
       )}
 
       <section className="rounded-lg border-2 border-indigo-200 bg-indigo-50 p-4">
-        <h2 className="text-sm font-bold text-indigo-900 mb-1">Analysis confidence (preview)</h2>
-        <p className="text-2xl font-bold text-indigo-700">{confidence}%</p>
-        <p className="text-xs text-indigo-800 mt-1">
-          Based on required/recommended docs and tax confirmation. Not confirmed or missing docs reduce the score.
+        <h2 className="text-sm font-bold text-indigo-900 mb-1">Next step</h2>
+        <p className="text-sm text-indigo-800">
+          Run DealSense to analyse your deal pack and get readiness feedback.
         </p>
       </section>
     </div>

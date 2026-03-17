@@ -4,6 +4,13 @@ import { useEffect, useState, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
 import { buildReportDisplay } from "@/lib/dealsense/reportDisplay";
+import {
+  OUTSTANDING_ITEMS,
+  OUTSTANDING_STATUSES,
+  isEarlyStageStatus,
+  type OutstandingItemId,
+  type OutstandingStatusValue,
+} from "@/lib/dealsense/outstandingItems";
 
 type DocCompletenessSnapshot = {
   required: { uploaded: number; pending: number; missing: number; not_required: number };
@@ -56,6 +63,9 @@ export default function RunResultsPage() {
     } | null;
     stillGap: boolean;
   }>>({});
+  const [outstandingStatus, setOutstandingStatus] = useState<Record<string, OutstandingStatusValue>>(() =>
+    Object.fromEntries(OUTSTANDING_ITEMS.map((item) => [item.id, "not_provided" as OutstandingStatusValue]))
+  );
 
   const missingRunId = !runId || runId === "undefined";
   const displayProcessError = processError ?? (missingRunId ? "Missing runId" : null);
@@ -617,25 +627,12 @@ export default function RunResultsPage() {
         </div>
       </div>
 
-      {run.doc_completeness_snapshot && (
+      {/* Legacy submission completeness card (hidden under new incomplete-pack model) */}
+      {false && run.doc_completeness_snapshot && (
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4">
           <h2 className="text-sm font-bold text-slate-700 mb-2">Submission completeness</h2>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-slate-600">
             <span className="font-semibold text-slate-900">{run.doc_completeness_snapshot.completenessPct}%</span>
-            {(["required", "recommended", "supporting"] as const).map((tier) => {
-              const t = run.doc_completeness_snapshot![tier];
-              const parts = [];
-              if (t.uploaded) parts.push(`${t.uploaded} uploaded`);
-              if (t.pending) parts.push(`${t.pending} pending`);
-              if (t.missing) parts.push(`${t.missing} missing`);
-              if (t.not_required) parts.push(`${t.not_required} not required`);
-              if (parts.length === 0) return null;
-              return (
-                <span key={tier}>
-                  {tier.charAt(0).toUpperCase() + tier.slice(1)}: {parts.join(", ")}
-                </span>
-              );
-            })}
           </div>
         </div>
       )}
@@ -650,11 +647,23 @@ export default function RunResultsPage() {
                 borderRadius: 6,
                 fontSize: 13,
                 fontWeight: 600,
-                background: report.summary.ready_to_submit ? "#d1fae5" : report.summary.status === "high_risk" ? "#fee2e2" : "#fef3c7",
-                color: report.summary.ready_to_submit ? "#065f46" : report.summary.status === "high_risk" ? "#991b1b" : "#92400e",
+                background: report.summary.ready_to_submit && report.summary.counts.critical === 0 && report.summary.counts.open === 0
+                  ? "#d1fae5"
+                  : report.summary.status === "high_risk" || report.summary.counts.critical > 0
+                  ? "#fee2e2"
+                  : "#fef3c7",
+                color: report.summary.ready_to_submit && report.summary.counts.critical === 0 && report.summary.counts.open === 0
+                  ? "#065f46"
+                  : report.summary.status === "high_risk" || report.summary.counts.critical > 0
+                  ? "#991b1b"
+                  : "#92400e",
               }}
             >
-              {report.summary.ready_to_submit ? "Ready to submit" : report.summary.status === "high_risk" ? "Needs attention" : "Needs work"}
+              {report.summary.ready_to_submit && report.summary.counts.critical === 0 && report.summary.counts.open === 0
+                ? "Ready to submit"
+                : report.summary.status === "high_risk" || report.summary.counts.critical > 0
+                ? "Needs attention before submission"
+                : "Early-stage / incomplete"}
             </span>
             <span style={{ fontSize: 14, color: "#475569", fontWeight: 600 }}>Score: {report.summary.score}/100</span>
             <span style={{ fontSize: 12, color: "#64748b" }}>
@@ -674,16 +683,16 @@ export default function RunResultsPage() {
           )}
           {report.summary.blocker_bullets.length > 0 && (
             <div style={{ marginTop: 4, marginBottom: 8 }}>
-              <h3 style={{ fontSize: 13, fontWeight: 600, color: "#111827", margin: "0 0 4px" }}>Key blockers</h3>
+              <h3 style={{ fontSize: 13, fontWeight: 600, color: "#111827", margin: "0 0 4px" }}>Top issues to address</h3>
               <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: "#475569", lineHeight: 1.5 }}>
-                {report.summary.blocker_bullets.map((b, idx) => (
+                {report.summary.blocker_bullets.slice(0, 3).map((b, idx) => (
                   <li key={idx}>{b}</li>
                 ))}
               </ul>
             </div>
           )}
           <p style={{ fontSize: 13, color: "#64748b", margin: 0, lineHeight: 1.5 }}>
-            <strong>Recommendation:</strong> {report.summary.recommendation}
+            <strong>Recommended next step:</strong> {report.summary.recommendation}
           </p>
           {report.summary.strengths.length > 0 && (
             <div style={{ marginTop: 12 }}>
@@ -695,6 +704,48 @@ export default function RunResultsPage() {
               </ul>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Outstanding items / deal status – context for credit review */}
+      {(run.status === "completed" || run.status === "failed") && (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
+          <h2 className="text-base font-semibold text-slate-900 mb-1">Deal status</h2>
+          <p className="text-sm text-slate-600 mb-4">
+            Context for credit review. Items that are often expected in a submission but may not yet be in this pack—update status so it’s clear for the lender.
+          </p>
+          <ul className="space-y-3">
+            {OUTSTANDING_ITEMS.map((item) => {
+              const status = outstandingStatus[item.id] ?? "not_provided";
+              const showEarlyStageNote = isEarlyStageStatus(status);
+              return (
+                <li key={item.id} className="flex flex-wrap items-center gap-3 rounded-lg border border-slate-100 bg-slate-50/50 px-3 py-2">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium text-slate-900">{item.label}</p>
+                    {showEarlyStageNote && (
+                      <p className="text-xs text-slate-500 mt-0.5">Deal may still be in an early stage.</p>
+                    )}
+                  </div>
+                  <select
+                    value={status}
+                    onChange={(e) =>
+                      setOutstandingStatus((prev) => ({
+                        ...prev,
+                        [item.id]: e.target.value as OutstandingStatusValue,
+                      }))
+                    }
+                    className="rounded border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-800 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500"
+                  >
+                    {OUTSTANDING_STATUSES.map((s) => (
+                      <option key={s.value} value={s.value}>
+                        {s.label}
+                      </option>
+                    ))}
+                  </select>
+                </li>
+              );
+            })}
+          </ul>
         </div>
       )}
 
@@ -729,7 +780,7 @@ export default function RunResultsPage() {
             </div>
           )}
 
-          {dealsenseSummary.informationGaps && dealsenseSummary.informationGaps.length > 0 && (
+          {false && dealsenseSummary.informationGaps && dealsenseSummary.informationGaps.length > 0 && (
             <div>
               <h3 className="text-sm font-semibold text-amber-800 mb-2">Information gaps</h3>
               <div className="space-y-3 text-sm text-slate-700">
@@ -848,8 +899,8 @@ export default function RunResultsPage() {
         </div>
       )}
 
-      {/* Key Actions */}
-      {report && (report.summary.must_resolve.length > 0 || report.summary.should_improve.length > 0 || report.summary.optional.length > 0) && (
+      {/* Key Actions (hidden to reduce clutter) */}
+      {false && report && (report.summary.must_resolve.length > 0 || report.summary.should_improve.length > 0 || report.summary.optional.length > 0) && (
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
           <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 16, color: "#111827" }}>Key actions</h2>
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -985,8 +1036,8 @@ export default function RunResultsPage() {
         )}
       </div>
 
-      {/* Credit view (compact, structured) */}
-      {(run.status === "completed" || run.status === "failed") && (
+      {/* Credit view (compact, structured – hidden) */}
+      {false && (run.status === "completed" || run.status === "failed") && (
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
           <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 12, color: "#111827" }}>Credit view</h2>
           <div style={{ display: "flex", flexDirection: "column", gap: 8, fontSize: 13, color: "#334155" }}>
@@ -1007,8 +1058,8 @@ export default function RunResultsPage() {
         </div>
       )}
 
-      {/* Persisted transaction summary (from DealSense run) */}
-      {run.deal_summary_text && run.deal_summary_text.trim() && (
+      {/* Persisted transaction summary (from DealSense run – hidden) */}
+      {false && run.deal_summary_text && run.deal_summary_text.trim() && (
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
           <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 12, color: "#111827" }}>
             Transaction summary
@@ -1019,125 +1070,128 @@ export default function RunResultsPage() {
         </div>
       )}
 
-      {/* Findings by theme (credit-memo style) */}
+      {/* Findings: credit-review style, grouped by severity */}
       {(run.status === "completed" || run.status === "failed") && (
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
-          <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 16, color: "#111827" }}>Findings by area</h2>
+          <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 8, color: "#111827" }}>Credit review feedback</h2>
+          <p style={{ fontSize: 14, color: "#64748b", marginBottom: 20, lineHeight: 1.5 }}>
+            Points a credit reviewer would typically flag. Address or acknowledge before submission.
+          </p>
           {!report || report.themes.length === 0 ? (
             <p style={{ fontSize: 14, color: "#64748b", margin: 0 }}>No findings. The pack has no items to address.</p>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-              {report.themes.map((group) => {
-                const colors = severityColors;
-                return (
-                  <div key={group.theme}>
-                    <div style={{ marginBottom: 12 }}>
-                      <h3 style={{ fontSize: 16, fontWeight: 600, margin: "0 0 4px", color: "#1e293b" }}>{group.theme}</h3>
-                      {group.summary && (
-                        <p style={{ fontSize: 13, color: "#64748b", margin: 0, lineHeight: 1.4 }}>{group.summary}</p>
-                      )}
-                      <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-                        {group.counts.critical > 0 && (
-                          <span style={{ padding: "2px 8px", borderRadius: 4, fontSize: 11, fontWeight: 600, background: colors.critical.bg, color: colors.critical.color }}>
-                            {group.counts.critical} critical
-                          </span>
-                        )}
-                        {group.counts.warning > 0 && (
-                          <span style={{ padding: "2px 8px", borderRadius: 4, fontSize: 11, fontWeight: 600, background: colors.warning.bg, color: colors.warning.color }}>
-                            {group.counts.warning} warning
-                          </span>
-                        )}
-                        {group.counts.info > 0 && (
-                          <span style={{ padding: "2px 8px", borderRadius: 4, fontSize: 11, fontWeight: 600, background: colors.info.bg, color: colors.info.color }}>
-                            {group.counts.info} info
-                          </span>
-                        )}
+          ) : (() => {
+            const allFindings = report.themes.flatMap((g) => g.findings);
+            const bySeverity = {
+              critical: allFindings.filter((f) => f.severity === "critical"),
+              warning: allFindings.filter((f) => f.severity === "warning"),
+              info: allFindings.filter((f) => f.severity === "info"),
+            };
+            const severityOrder: Array<"critical" | "warning" | "info"> = ["critical", "warning", "info"];
+            return (
+              <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>
+                {severityOrder.map((sev) => {
+                  const list = bySeverity[sev];
+                  if (list.length === 0) return null;
+                  const colors = severityColors[sev];
+                  return (
+                    <div key={sev}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                        <span
+                          style={{
+                            padding: "4px 10px",
+                            borderRadius: 4,
+                            fontSize: 12,
+                            fontWeight: 600,
+                            textTransform: "capitalize",
+                            background: colors.bg,
+                            color: colors.color,
+                          }}
+                        >
+                          {sev}
+                        </span>
+                        <span style={{ fontSize: 13, color: "#64748b" }}>{list.length} {list.length === 1 ? "item" : "items"}</span>
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                        {list.map((rf) => {
+                          const sevColors = severityColors[rf.severity] ?? severityColors.info;
+                          const isCompleted = rf.workflow_state === "resolved" || rf.workflow_state === "dismissed";
+                          return (
+                            <div
+                              key={rf.id}
+                              style={{
+                                padding: "14px 16px",
+                                background: isCompleted ? "#f8fafc" : "#fafbfc",
+                                borderRadius: 8,
+                                border: `1px solid ${isCompleted ? "rgba(0,0,0,0.08)" : `${sevColors.color}22`}`,
+                                opacity: isCompleted ? 0.88 : 1,
+                              }}
+                            >
+                              <div style={{ display: "flex", alignItems: "flex-start", gap: 12, justifyContent: "space-between" }}>
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+                                    <span
+                                      style={{
+                                        padding: "2px 6px",
+                                        borderRadius: 4,
+                                        fontSize: 10,
+                                        color: "#64748b",
+                                        background: "#e2e8f0",
+                                        textTransform: "capitalize",
+                                      }}
+                                    >
+                                      {rf.workflow_state}
+                                    </span>
+                                    <span style={{ fontSize: 11, color: "#64748b" }}>{rf.theme}</span>
+                                  </div>
+                                  <h4 style={{ fontSize: 15, fontWeight: 600, margin: "0 0 8px", color: "#111827", lineHeight: 1.35 }}>
+                                    {rf.title}
+                                  </h4>
+                                  {rf.why_it_matters && (
+                                    <p style={{ fontSize: 13, color: "#475569", margin: "0 0 12px", lineHeight: 1.55 }}>
+                                      {rf.why_it_matters}
+                                    </p>
+                                  )}
+                                  <div
+                                    style={{
+                                      fontSize: 13,
+                                      color: "#334155",
+                                      lineHeight: 1.5,
+                                      paddingTop: 10,
+                                      borderTop: "1px solid #e2e8f0",
+                                    }}
+                                  >
+                                    <strong style={{ color: "#1e293b" }}>Next step:</strong> {rf.next_step}
+                                  </div>
+                                </div>
+                                <select
+                                  value={rf.workflow_state}
+                                  onChange={(e) => handleWorkflowStateChange(rf.id, e.target.value)}
+                                  style={{
+                                    padding: "4px 8px",
+                                    borderRadius: 4,
+                                    border: "1px solid rgba(0,0,0,0.2)",
+                                    fontSize: 12,
+                                    cursor: "pointer",
+                                    background: "white",
+                                    flexShrink: 0,
+                                  }}
+                                >
+                                  <option value="open">Open</option>
+                                  <option value="acknowledged">Acknowledged</option>
+                                  <option value="resolved">Resolved</option>
+                                  <option value="dismissed">Dismissed</option>
+                                </select>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                      {group.findings.map((rf) => {
-                        const sevColors = severityColors[rf.severity] ?? severityColors.info;
-                        const isCompleted = rf.workflow_state === "resolved" || rf.workflow_state === "dismissed";
-                        return (
-                          <div
-                            key={rf.id}
-                            style={{
-                              padding: "12px 16px",
-                              background: isCompleted ? "#f8fafc" : "#f9fafb",
-                              borderRadius: 8,
-                              border: `1px solid ${isCompleted ? "rgba(0,0,0,0.08)" : `${sevColors.color}20`}`,
-                              opacity: isCompleted ? 0.85 : 1,
-                            }}
-                          >
-                            <div style={{ display: "flex", alignItems: "flex-start", gap: 12, justifyContent: "space-between" }}>
-                              <div style={{ flex: 1 }}>
-                                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
-                                  <span
-                                    style={{
-                                      padding: "4px 8px",
-                                      borderRadius: 4,
-                                      background: sevColors.bg,
-                                      color: sevColors.color,
-                                      fontSize: 11,
-                                      fontWeight: 600,
-                                      textTransform: "capitalize",
-                                    }}
-                                  >
-                                    {rf.severity}
-                                  </span>
-                                  <span
-                                    style={{
-                                      padding: "2px 6px",
-                                      borderRadius: 4,
-                                      fontSize: 10,
-                                      color: "#64748b",
-                                      background: "#e2e8f0",
-                                      textTransform: "capitalize",
-                                    }}
-                                  >
-                                    {rf.workflow_state}
-                                  </span>
-                                  <h4 style={{ fontSize: 14, fontWeight: 600, margin: 0, color: "#111827" }}>{rf.title}</h4>
-                                </div>
-                                {rf.why_it_matters && (
-                                  <p style={{ fontSize: 13, color: "#475569", margin: "0 0 8px", lineHeight: 1.5 }}>
-                                    <strong style={{ color: "#374151" }}>Why it matters:</strong> {rf.why_it_matters}
-                                  </p>
-                                )}
-                                {rf.next_step && (
-                                  <p style={{ fontSize: 13, color: "#64748b", margin: 0, lineHeight: 1.5 }}>
-                                    <strong style={{ color: "#374151" }}>Next step:</strong> {rf.next_step}
-                                  </p>
-                                )}
-                              </div>
-                              <select
-                                value={rf.workflow_state}
-                                onChange={(e) => handleWorkflowStateChange(rf.id, e.target.value)}
-                                style={{
-                                  padding: "4px 8px",
-                                  borderRadius: 4,
-                                  border: "1px solid rgba(0,0,0,0.2)",
-                                  fontSize: 12,
-                                  cursor: "pointer",
-                                  background: "white",
-                                  flexShrink: 0,
-                                }}
-                              >
-                                <option value="open">Open</option>
-                                <option value="acknowledged">Acknowledged</option>
-                                <option value="resolved">Resolved</option>
-                                <option value="dismissed">Dismissed</option>
-                              </select>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
+                  );
+                })}
+              </div>
+            );
+          })()}
         </div>
       )}
 

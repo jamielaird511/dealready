@@ -103,16 +103,26 @@ function themeSummary(theme: ReportTheme, count: number): string {
   return summaries[theme] ?? `${theme} items.`;
 }
 
-/** Lightly clean raw titles into more professional labels */
+/** Plain-English titles for credit-review tone; preserve useful content */
 function toProfessionalTitle(rawTitle: string | null | undefined): string {
   const base = (rawTitle ?? "").trim();
-  if (!base) return "Finding";
+  if (!base) return "Item for review";
   const lower = base.toLowerCase();
-  if (lower === "missing borrower") return "Borrower entity details missing";
-  if (lower === "missing security details") return "Security details missing";
-  if (lower === "missing loan purpose") return "Loan purpose not clearly stated";
-  if (lower === "missing financial statements") return "Financial statements missing";
-  // Default: capitalise first letter and leave rest as-is
+  if (lower.includes("dealsense could not determine")) {
+    const rest = base.replace(/^dealsense could not determine:\s*/i, "").trim();
+    if (rest) return rest.endsWith("?") ? rest.slice(0, -1) + " not clearly stated in the pack." : rest + " not clearly stated in the pack.";
+  }
+  if (lower.includes("missing borrower") || lower.includes("borrower entity")) return "Borrower or purchasing entity not clearly identified";
+  if (lower.includes("missing security") || lower.includes("security details")) return "Security or collateral details need clarification";
+  if (lower.includes("missing loan purpose") || lower.includes("loan purpose")) return "Loan purpose or use of funds not clearly stated";
+  if (lower.includes("missing financial") || lower.includes("financial statements")) return "Financial statements or prior-year numbers not provided or unclear";
+  if (lower.includes("forecast") || lower.includes("projection")) return "Forecast growth or assumptions need support or explanation";
+  if (lower.includes("repayment") || lower.includes("servicing")) return "Repayment source or debt servicing may need clarification";
+  if (lower.includes("owner") && (lower.includes("salary") || lower.includes("remuneration") || lower.includes("drawings"))) return "Owner salary or drawings may not be reflected in servicing";
+  if (lower.includes("valuation") || lower.includes("property")) return "Property or asset valuation not clearly referenced";
+  if (lower.includes("purchase agreement") || lower.includes("sale and purchase")) return "Purchase agreement or S&P terms not clearly summarised";
+  if (lower.includes("term") || lower.includes("maturity")) return "Proposed loan term may not align with typical structure for this security type";
+  if (lower.includes("guarantor") || lower.includes("guarantee")) return "Guarantor support or recourse not clearly set out";
   return base.charAt(0).toUpperCase() + base.slice(1);
 }
 
@@ -162,50 +172,84 @@ function toActionLabel(title: string | null | undefined, message: string | null 
   return cleanedTitle !== "Finding" ? `Resolve: ${cleanedTitle}` : "Review and address this item";
 }
 
-/** Banker-style explanation of why an issue matters, based on theme and optional detail */
-function buildWhyItMatters(theme: ReportTheme, rawMessage: string | null | undefined): string {
+/** Credit-review style explanation: practical concern, not generic */
+function buildWhyItMatters(theme: ReportTheme, rawMessage: string | null | undefined, rawTitle?: string | null): string {
   const detail = (rawMessage ?? "").trim();
+  const t = (rawTitle ?? "").toLowerCase();
   let base: string;
   switch (theme) {
     case "Deal Structure":
-      base =
-        "Without clear borrower and structure information, the lender cannot assess sponsor strength, ownership, or the legal borrowing entity.";
+      base = "Lenders need to see who is borrowing and how the structure is set up.";
       break;
     case "Security":
-      base =
-        "Without clear security details, the lender cannot assess collateral adequacy or recovery position.";
+      base = "Collateral and ranking drive recovery; clarity here avoids follow-up.";
       break;
     case "Servicing":
-      base =
-        "Without clear repayment support, the lender cannot assess whether the proposed debt can be serviced on an acceptable basis.";
+      base = "Debt-servicing and repayment source are central to credit decisions.";
       break;
     case "Financials":
       base =
-        "Weak or incomplete financial information limits the lender’s ability to assess performance, leverage, and repayment capacity.";
+        t.includes("forecast") || t.includes("projection")
+          ? "Forecast growth that significantly exceeds historical trading usually needs a short explanation."
+          : "Historical financials support leverage and repayment capacity.";
       break;
     case "Guarantor Support":
-      base =
-        "Without clarity on guarantor support, the lender cannot fully assess secondary sources of repayment or recourse.";
+      base = "Guarantees and recourse affect risk; lenders will ask if this is unclear.";
       break;
     case "Documents":
-      base =
-        "Missing supporting documents limit the lender’s ability to verify key assumptions in the credit decision.";
+      base = "Supporting documents help the lender verify key assumptions.";
       break;
     case "Compliance":
-      base =
-        "Incomplete compliance information may delay assessment and prevent the submission from meeting lender requirements.";
+      base = "Clear compliance context reduces back-and-forth and speeds assessment.";
       break;
     case "Forecasts":
-      base =
-        "Without support for forecast assumptions, the lender cannot place appropriate reliance on projected servicing and performance.";
+      base = "Forecast assumptions need to be visible so the lender can rely on projections.";
       break;
     default:
-      base = "Without this information, the lender cannot fully assess the transaction.";
+      base = "This is the kind of point a credit reviewer would flag for clarification.";
   }
+  if (detail && !detail.toLowerCase().includes("could not determine") && detail.length < 200) {
+    return `${base} ${detail}`;
+  }
+  return base;
+}
 
-  if (!detail) return base;
-  // Append concise contextual detail without surfacing raw debug text
-  return `${base} ${detail}`;
+/** Single, practical next step in credit-review language; always returns a non-empty string */
+function buildNextStep(
+  fix: string | null | undefined,
+  theme: ReportTheme,
+  rawTitle?: string | null,
+  rawMessage?: string | null
+): string {
+  const trimmed = (fix ?? "").trim();
+  const t = (rawTitle ?? "").toLowerCase();
+  const m = (rawMessage ?? "").toLowerCase();
+  if (trimmed && trimmed.length > 10 && !/^(review|check|consider|please)\s/i.test(trimmed)) {
+    return trimmed;
+  }
+  switch (theme) {
+    case "Deal Structure":
+      return "Confirm borrower entity and structure in the pack and add a one-line summary if missing.";
+    case "Security":
+      return "Include security type, ranking, and any key conditions so the lender can assess collateral.";
+    case "Servicing":
+      return "Clarify repayment source and show how debt is serviced (e.g. cashflow, sale, refinance).";
+    case "Financials":
+      if (t.includes("forecast") || t.includes("projection") || m.includes("forecast")) {
+        return "Add a short note explaining forecast growth vs historical trading, or attach supporting assumptions.";
+      }
+      return "Provide or clearly reference financial statements and prior-year numbers.";
+    case "Guarantor Support":
+      return "Summarise guarantor coverage and any limitations so the lender can assess recourse.";
+    case "Documents":
+      return "Attach or reference the missing document so the lender can verify the point.";
+    case "Compliance":
+      return "Add the missing compliance detail or confirm it will be supplied at submission.";
+    case "Forecasts":
+      return "State or attach the key assumptions behind the forecast so they can be relied on.";
+    default:
+      return "Review and address before submission, or confirm with the lender if already covered.";
+  }
 }
 
 type ThemeStats = {
@@ -849,8 +893,8 @@ export function buildReportDisplay(
   const reportFindings: ReportFinding[] = rawFindings.map((f) => {
     const theme = mapToTheme(f.category, f.title);
     const title = toProfessionalTitle(f.title);
-    const why_it_matters = buildWhyItMatters(theme, f.message);
-    const next_step = (f.fix ?? "").trim() || "Review and take appropriate action.";
+    const why_it_matters = buildWhyItMatters(theme, f.message, f.title);
+    const next_step = buildNextStep(f.fix, theme, f.title, f.message);
     const evidence = f.message ? [f.message] : undefined;
     return {
       id: f.id,

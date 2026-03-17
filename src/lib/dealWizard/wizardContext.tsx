@@ -275,21 +275,17 @@ export function WizardProvider({ children }: { children: React.ReactNode }) {
             <div>
               {currentStep < 4 ? (
                 <div className="flex flex-col items-end gap-1">
-                  {currentStep === 3 && (() => {
-                    const requiredIds = PURPOSE_DOC_MATRIX[state.purposeKey].required;
-                    const step3Ready = requiredIds.every((id) => state.docUploaded[id] || state.docMissing?.[id]);
-                    if (!step3Ready) {
-                      return <span className="text-sm text-amber-700">Complete required docs to continue.</span>;
-                    }
-                    return null;
-                  })()}
+                  {currentStep === 3 && (
+                    <span className="text-sm text-slate-600">
+                      You can continue with an incomplete pack. DealReady will assess whatever is uploaded and call out gaps.
+                    </span>
+                  )}
                   <button
                     type="button"
                     onClick={() => goNext()}
                     disabled={
                       (currentStep === 1 && (!state.dealName.trim() || !state.purposeKey)) ||
-                      (currentStep === 3 && state.taxPosition === "arrears_exist" && !state.taxExplanation.trim()) ||
-                      (currentStep === 3 && !PURPOSE_DOC_MATRIX[state.purposeKey].required.every((id) => state.docUploaded[id] || state.docMissing?.[id]))
+                      (currentStep === 3 && state.taxPosition === "arrears_exist" && !state.taxExplanation.trim())
                     }
                     className="rounded-lg bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
                   >

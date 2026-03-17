@@ -687,6 +687,93 @@ export default function DealPage() {
     if (tabParam === "documents") setActiveTab("documents");
   }, [tabParam]);
 
+  // Lightweight DealSense snapshot derived from latest run (if any)
+  const dealSnapshotSummary = (() => {
+    if (!latestRun || latestRun.status !== "completed") return null;
+    const raw = (latestRun as any).deal_summary_data;
+    if (!raw || typeof raw !== "object") return null;
+    const dealSummary = raw as any;
+    const summaryText = (field: any, kind?: "purpose" | "repayment") => {
+      const v = typeof field?.value === "string" ? field.value.trim() : "";
+      if (!v) {
+        if (kind === "purpose") return "Purpose not clearly described in pack";
+        if (kind === "repayment") return "Primary repayment source not clearly described";
+        return "Not clearly documented";
+      }
+      if (kind === "purpose") {
+        const lower = v.toLowerCase();
+        if (lower === "business_purchase") return "Business acquisition";
+        if (lower === "working_capital") return "Working capital";
+        if (lower === "property_purchase") return "Property purchase";
+        if (lower === "shareholder_buyout") return "Shareholder buyout";
+      }
+      return v;
+    };
+    const formatCurrencyShort = (value: number) => {
+      const abs = Math.abs(value);
+      if (abs >= 1_000_000) return `$${(value / 1_000_000).toFixed(1)}m`;
+      if (abs >= 1_000) return `$${(value / 1_000).toFixed(1)}k`;
+      return `$${value.toFixed(0)}`;
+    };
+    const summaryNum = (field: any) => {
+      const v = typeof field?.value === "number" && Number.isFinite(field.value) ? field.value : null;
+      if (v == null) return "Not clearly documented";
+      return formatCurrencyShort(Math.round(v));
+    };
+
+    const purpose = summaryText(dealSummary.purpose, "purpose");
+    const repayment = summaryText(dealSummary.repayment_source, "repayment");
+    const amount = summaryNum(dealSummary.funding_requested);
+    const security = summaryText(dealSummary.security, undefined);
+
+    const missing: string[] = [];
+
+    // Borrower / purchasing entity – based on key_people
+    const keyPeople = Array.isArray((dealSummary as any).key_people) ? (dealSummary as any).key_people : [];
+    const hasBorrowerPerson = keyPeople.some((p: any) => {
+      const roleRaw = typeof p?.role === "string" ? p.role.trim().toLowerCase() : "";
+      return roleRaw === "borrower" || roleRaw === "applicant" || roleRaw === "purchaser";
+    });
+    if (!hasBorrowerPerson) {
+      missing.push("Borrower / purchasing entity not detected");
+    }
+
+    const purchasePrice = summaryNum((dealSummary as any).purchase_price);
+    if (purchasePrice === "Not clearly documented") {
+      missing.push("Purchase price not detected");
+    }
+
+    const equityContribution = summaryNum((dealSummary as any).equity_contribution);
+    if (equityContribution === "Not clearly documented") {
+      missing.push("Equity contribution not detected");
+    }
+
+    if (amount === "Not clearly documented") {
+      missing.push("Funding amount not detected");
+    }
+
+    const loanTermField = (dealSummary as any).loan_term;
+    const loanTermValue =
+      typeof loanTermField?.value === "string"
+        ? loanTermField.value.trim()
+        : typeof loanTermField?.value === "number"
+        ? String(loanTermField.value)
+        : "";
+    if (!loanTermValue) {
+      missing.push("Loan term not detected");
+    }
+
+    if (security === "Not clearly documented") {
+      missing.push("Security not detected");
+    }
+
+    if (repayment === "Primary repayment source not clearly described") {
+      missing.push("Primary repayment source not detected");
+    }
+
+    return { purpose, repayment, amount, security, missing };
+  })();
+
   const wizardNextStep = useMemo(() => {
     if (!deal?.wizard_state) return 1;
     const pt = purposeType || deal.purpose_type || "other";
@@ -1719,6 +1806,15 @@ export default function DealPage() {
         <div className="flex flex-wrap justify-between items-center gap-4">
           <div className="flex flex-wrap items-center gap-2">
             {(() => {
+              // Brand new / no findings yet: neutral state
+              const hasAnyFindings = latestFindings.length > 0;
+              if (!hasAnyFindings) {
+                return (
+                  <span style={{ padding: "4px 10px", borderRadius: 6, fontSize: 12, fontWeight: 600, flexShrink: 0, background: "#e5e7eb", color: "#4b5563" }}>
+                    Not assessed
+                  </span>
+                );
+              }
               const active = latestFindings.filter((f) => {
                 const state = f.workflow_state ?? "open";
                 return state === "open" || state === "acknowledged";
@@ -1764,8 +1860,15 @@ export default function DealPage() {
                 supportingTotal: sup.total,
                 supportingUploaded: sup.uploaded,
               });
+              const hasDocs = files.length > 0 && docsPct > 0;
               const docsStyle =
-                docsPct < 60 ? { background: "#fee2e2", color: "#991b1b" } : docsPct < 85 ? { background: "#fef3c7", color: "#92400e" } : { background: "#d1fae5", color: "#065f46" };
+                !hasDocs
+                  ? { background: "#e5e7eb", color: "#4b5563" }
+                  : docsPct < 60
+                  ? { background: "#fee2e2", color: "#991b1b" }
+                  : docsPct < 85
+                  ? { background: "#fef3c7", color: "#92400e" }
+                  : { background: "#d1fae5", color: "#065f46" };
               return (
                 <>
                   <span style={{ padding: "4px 10px", borderRadius: 6, fontSize: 12, fontWeight: 600, flexShrink: 0, ...style }}>
@@ -1776,7 +1879,7 @@ export default function DealPage() {
                       title="Based on purpose checklist document completeness"
                       style={{ padding: "4px 10px", borderRadius: 6, fontSize: 12, fontWeight: 600, flexShrink: 0, ...docsStyle }}
                     >
-                      Docs: {docsPct}%
+                      {hasDocs ? `Docs: ${docsPct}%` : "No documents uploaded"}
                     </span>
                   )}
                 </>
@@ -1855,24 +1958,26 @@ export default function DealPage() {
             >
               {generatingSummary ? "Generating…" : "Generate lender summary"}
             </button>
-            <button
-              type="button"
-              onClick={() => dealId && router.push(`/app/deals/${dealId}/wizard/step-${wizardNextStep}`)}
-              disabled={!dealId}
-              style={{
-                padding: "8px 16px",
-                fontSize: 14,
-                fontWeight: 600,
-                borderRadius: 8,
-                border: "1px solid #4f46e5",
-                background: "#4f46e5",
-                color: "white",
-                cursor: dealId ? "pointer" : "not-allowed",
-                opacity: dealId ? 1 : 0.7,
-              }}
-            >
-              Continue wizard
-            </button>
+            {deal?.wizard_state && (
+              <button
+                type="button"
+                onClick={() => dealId && router.push(`/app/deals/${dealId}/wizard/step-${wizardNextStep}`)}
+                disabled={!dealId}
+                style={{
+                  padding: "8px 16px",
+                  fontSize: 14,
+                  fontWeight: 600,
+                  borderRadius: 8,
+                  border: "1px solid #4f46e5",
+                  background: "#4f46e5",
+                  color: "white",
+                  cursor: dealId ? "pointer" : "not-allowed",
+                  opacity: dealId ? 1 : 0.7,
+                }}
+              >
+                Continue wizard
+              </button>
+            )}
             <button
               type="button"
               onClick={() => dealId && router.push(`/app/deals/${dealId}/wizard/step-1`)}
@@ -2558,34 +2663,148 @@ export default function DealPage() {
       {/* Tab content: Overview */}
       {activeTab === "overview" && (
         <>
-      {/* Latest DealSense Card - informational only */}
-      {!latestRunLoading && (
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm" style={{ padding: 24 }}>
-          <h2 className="text-xl font-semibold text-gray-900" style={{ marginBottom: 16 }}>Latest DealSense</h2>
-
-          {latestRunError && (
-            <p style={{ fontSize: 13, color: "#dc2626", marginBottom: 12 }}>{latestRunError}</p>
+      {/* Upload-first workspace panels */}
+      <div className="grid grid-cols-1 gap-4 mb-4 md:grid-cols-2 lg:grid-cols-4">
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+          <h2 className="text-base font-semibold text-slate-900 mb-2">Upload deal pack</h2>
+          {files.length === 0 ? (
+            <p className="text-sm text-slate-600 mb-3">
+              This deal doesn&apos;t have any documents yet. Upload the deal pack to start analysis.
+            </p>
+          ) : (
+            <p className="text-sm text-slate-600 mb-3">
+              Add or replace documents as the deal evolves. DealSense will reassess based on what&apos;s in the pack.
+            </p>
           )}
+          <button
+            type="button"
+            onClick={handleFileSelectButton}
+            className="inline-flex items-center justify-center rounded-md bg-indigo-600 px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-indigo-700"
+          >
+            {files.length === 0 ? "Upload documents" : "Add documents"}
+          </button>
+        </div>
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+          <h2 className="text-base font-semibold text-slate-900 mb-2">Deal snapshot</h2>
+          {!latestRun || latestRun.status !== "completed" || !dealSnapshotSummary ? (
+            <p className="text-sm text-slate-600">
+              Upload documents and run analysis to populate this summary.
+            </p>
+          ) : (
+            <dl className="grid grid-cols-1 gap-2 text-sm text-slate-800">
+              <div className="flex gap-2">
+                <dt className="w-32 shrink-0 text-slate-500 font-medium">Purpose</dt>
+                <dd className="flex-1">{dealSnapshotSummary.purpose}</dd>
+              </div>
+              <div className="flex gap-2">
+                <dt className="w-32 shrink-0 text-slate-500 font-medium">Funding requested</dt>
+                <dd className="flex-1">{dealSnapshotSummary.amount}</dd>
+              </div>
+              <div className="flex gap-2">
+                <dt className="w-32 shrink-0 text-slate-500 font-medium">Primary repayment</dt>
+                <dd className="flex-1">{dealSnapshotSummary.repayment}</dd>
+              </div>
+              <div className="flex gap-2">
+                <dt className="w-32 shrink-0 text-slate-500 font-medium">Security</dt>
+                <dd className="flex-1">{dealSnapshotSummary.security}</dd>
+              </div>
+            </dl>
+          )}
+        </div>
 
-          {!latestRun ? (
-            <>
-              <p style={{ fontSize: 14, color: "#6b7280", marginBottom: 12 }}>No DealSense run yet.</p>
-              <button
-                type="button"
-                onClick={() => dealId && router.push(`/app/deals/${dealId}/wizard/step-2`)}
-                className="text-sm text-indigo-600 hover:underline cursor-pointer"
-              >
-                Edit documents in wizard
-              </button>
-            </>
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+          <h2 className="text-base font-semibold text-slate-900 mb-2">Credit readiness</h2>
+          {!latestRun || latestRun.status !== "completed" || latestFindings.length === 0 ? (
+            <p className="text-sm text-slate-600">
+              Run deal analysis to see credit feedback and deal readiness.
+            </p>
           ) : (
             <>
-              <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12, marginBottom: 16 }}>
+              <div className="flex flex-wrap items-center gap-2 mb-3 text-xs">
+                <span className="px-2 py-1 rounded-md bg-rose-100 text-rose-800 font-semibold">
+                  Critical: {latestFindings.filter((f) => f.severity === "critical").length}
+                </span>
+                <span className="px-2 py-1 rounded-md bg-amber-100 text-amber-800 font-semibold">
+                  Warnings: {latestFindings.filter((f) => f.severity === "warning").length}
+                </span>
+                <span className="px-2 py-1 rounded-md bg-emerald-100 text-emerald-800 font-semibold">
+                  Info: {latestFindings.filter((f) => f.severity === "info").length}
+                </span>
+              </div>
+              <div className="text-xs text-slate-500 mb-2">
+                Latest run: {latestRun.created_at ? new Date(latestRun.created_at).toLocaleString() : "unknown"}
+              </div>
+              <div className="mt-1">
+                <div className="text-xs font-semibold text-slate-700 mb-1">Top issues</div>
+                {Array.isArray(latestRun.top_fixes) && latestRun.top_fixes.length > 0 ? (
+                  <ul className="list-disc pl-5 text-sm text-slate-700 space-y-1">
+                    {latestRun.top_fixes.slice(0, 3).map((fix, i) => (
+                      <li key={i}>{fix}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <ul className="list-disc pl-5 text-sm text-slate-700 space-y-1">
+                    {latestFindings.slice(0, 3).map((f, i) => (
+                      <li key={f.id ?? i}>{f.title ?? "Issue highlighted by DealSense"}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 lg:col-span-1 md:col-span-2">
+          <h2 className="text-base font-semibold text-slate-900 mb-2">Information still needed</h2>
+          {!latestRun || latestRun.status !== "completed" || !dealSnapshotSummary ? (
+            <p className="text-sm text-slate-600">
+              Once analysis has run, DealSense will highlight any key deal details that are still unclear.
+            </p>
+          ) : dealSnapshotSummary.missing.length === 0 ? (
+            <p className="text-sm text-slate-600">
+              No major information gaps detected.
+            </p>
+          ) : (
+            <ul className="list-disc pl-5 text-sm text-slate-700 space-y-1">
+              {(() => {
+                const priority = (item: string): number => {
+                  if (item.startsWith("Borrower / purchasing entity")) return 1;
+                  if (item.startsWith("Equity contribution")) return 2;
+                  if (item.startsWith("Purchase price")) return 3;
+                  if (item.startsWith("Funding amount")) return 4;
+                  if (item.startsWith("Loan term")) return 5;
+                  if (item.startsWith("Security")) return 6;
+                  if (item.startsWith("Primary repayment source")) return 7;
+                  return 99;
+                };
+                const ordered = [...dealSnapshotSummary.missing].sort(
+                  (a, b) => priority(a) - priority(b)
+                );
+                return ordered.slice(0, 3).map((item, idx) => (
+                  <li key={idx}>{item}</li>
+                ));
+              })()}
+            </ul>
+          )}
+        </div>
+      </div>
+
+      {/* Latest DealSense Card - informational only */}
+      {!latestRunLoading && (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm px-5 py-3 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
+            <h2 className="text-sm font-semibold text-gray-900 mr-1">Latest DealSense</h2>
+            {latestRunError ? (
+              <span className="text-xs text-rose-700">{latestRunError}</span>
+            ) : !latestRun ? (
+              <span className="text-xs text-slate-500">No DealSense run yet.</span>
+            ) : (
+              <>
                 {latestRun.status && (
                   <span
                     style={{
-                      padding: "4px 10px",
-                      borderRadius: 6,
+                      padding: "3px 8px",
+                      borderRadius: 9999,
                       background:
                         latestRun.status === "completed" ? "#d1fae5"
                           : latestRun.status === "running" ? "#dbeafe"
@@ -2596,7 +2815,7 @@ export default function DealPage() {
                           : latestRun.status === "running" ? "#1e40af"
                           : latestRun.status === "failed" ? "#991b1b"
                           : "#374151",
-                      fontSize: 12,
+                      fontSize: 11,
                       fontWeight: 600,
                       textTransform: "capitalize",
                     }}
@@ -2606,47 +2825,54 @@ export default function DealPage() {
                 )}
                 {latestFindings.length > 0 && (
                   <>
-                    <span style={{ padding: "6px 12px", borderRadius: 6, background: "#fee2e2", color: "#991b1b", fontSize: 13, fontWeight: 600 }}>
-                      Critical: {latestFindings.filter((f) => f.severity === "critical").length}
+                    <span className="px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 text-xs font-semibold">
+                      C: {latestFindings.filter((f) => f.severity === "critical").length}
                     </span>
-                    <span style={{ padding: "6px 12px", borderRadius: 6, background: "#fef3c7", color: "#92400e", fontSize: 13, fontWeight: 600 }}>
-                      Warnings: {latestFindings.filter((f) => f.severity === "warning").length}
+                    <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-xs font-semibold">
+                      W: {latestFindings.filter((f) => f.severity === "warning").length}
                     </span>
-                    <span style={{ padding: "6px 12px", borderRadius: 6, background: "#d1fae5", color: "#065f46", fontSize: 13, fontWeight: 600 }}>
-                      Info: {latestFindings.filter((f) => f.severity === "info").length}
-                    </span>
-                    <span style={{ fontSize: 12, color: "#6b7280" }}>
-                      Active: {latestFindings.filter((f) => { const s = f.workflow_state ?? "open"; return s === "open" || s === "acknowledged"; }).length} • Resolved: {latestFindings.filter((f) => { const s = f.workflow_state ?? "open"; return s === "resolved" || s === "dismissed"; }).length}
+                    <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-xs font-semibold">
+                      I: {latestFindings.filter((f) => f.severity === "info").length}
                     </span>
                   </>
                 )}
-              </div>
-              <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-                <button
-                  type="button"
-                  onClick={() => dealId && router.push(`/app/deals/${dealId}/wizard/step-2`)}
-                  className="text-sm text-indigo-600 hover:underline cursor-pointer"
-                >
-                  Edit documents in wizard
-                </button>
-                {activeSubmissionId ? (
-                  <button
-                    onClick={() => router.push(`/app/submissions/${activeSubmissionId}`)}
-                    className="px-4 py-2 text-base font-semibold rounded-lg border border-green-700 bg-green-600 text-white cursor-pointer hover:bg-green-700"
-                  >
-                    View latest results
-                  </button>
-                ) : (
-                  <button
-                    disabled
-                    className="px-4 py-2 text-base font-semibold rounded-lg border border-gray-300 bg-gray-100 text-gray-400 cursor-not-allowed"
-                  >
-                    View latest results
-                  </button>
+                {latestRun.created_at && (
+                  <span className="text-xs text-slate-500">
+                    {new Date(latestRun.created_at).toLocaleString()}
+                  </span>
                 )}
-              </div>
-            </>
-          )}
+              </>
+            )}
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            {latestRun && activeSubmissionId && (
+              <button
+                type="button"
+                onClick={() => router.push(`/app/submissions/${activeSubmissionId}`)}
+                className="px-3 py-1.5 text-xs font-semibold rounded-md border border-slate-300 bg-white text-slate-800 hover:bg-slate-50"
+              >
+                View latest results
+              </button>
+            )}
+            {dealId && latestRun && (
+              <button
+                type="button"
+                onClick={() => router.push(`/app/deals/${dealId}/wizard/step-4`)}
+                className="px-3 py-1.5 text-xs font-semibold rounded-md border border-indigo-600 bg-indigo-600 text-white hover:bg-indigo-700"
+              >
+                Run again
+              </button>
+            )}
+            {dealId && !latestRun && (
+              <button
+                type="button"
+                onClick={() => router.push(`/app/deals/${dealId}/wizard/step-4`)}
+                className="px-3 py-1.5 text-xs font-semibold rounded-md border border-indigo-600 bg-indigo-600 text-white hover:bg-indigo-700"
+              >
+                Run checks
+              </button>
+            )}
+          </div>
         </div>
       )}
 
