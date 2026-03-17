@@ -61,35 +61,28 @@ export default function WizardStep3Page() {
     let cancelled = false;
     setLoading(true);
     const supabase = supabaseBrowser();
-    supabase
-      .from("submissions")
-      .select("id")
-      .eq("deal_id", dealId)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle()
-      .then(({ data: sub }) => {
+    void (async () => {
+      try {
+        const { data: sub } = await supabase
+          .from("submissions")
+          .select("id")
+          .eq("deal_id", dealId)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
         if (cancelled || !sub?.id) {
-          if (!cancelled) {
-            setFiles([]);
-            setLoading(false);
-          }
+          if (!cancelled) setFiles([]);
           return;
         }
-        return supabase
+        const { data: filesData } = await supabase
           .from("submission_files")
           .select("id, original_filename, display_name, category, doc_type, doc_type_confidence, storage_path")
           .eq("submission_id", sub.id)
           .eq("is_deleted", false)
           .order("created_at", { ascending: false });
-      })
-      .then((res) => {
-        if (cancelled) {
-          setLoading(false);
-          return;
-        }
-        if (res?.data) {
-          const rows = (res.data as {
+        if (cancelled) return;
+        if (filesData) {
+          const rows = (filesData as {
             id?: string;
             original_filename?: string | null;
             display_name?: string | null;
@@ -107,11 +100,12 @@ export default function WizardStep3Page() {
           }));
           setFiles(rows);
         }
+      } catch {
+        // ignore; loading cleared in finally
+      } finally {
         setLoading(false);
-      })
-      .catch(() => {
-        if (!cancelled) setLoading(false);
-      });
+      }
+    })();
     return () => {
       cancelled = true;
     };

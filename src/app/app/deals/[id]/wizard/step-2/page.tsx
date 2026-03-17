@@ -52,34 +52,32 @@ export default function WizardStep2Page() {
     let cancelled = false;
     setSyncing(true);
     const supabase = supabaseBrowser();
-    supabase
-      .from("submissions")
-      .select("id")
-      .eq("deal_id", dealId)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle()
-      .then(({ data: sub }) => {
+    void (async () => {
+      try {
+        const { data: sub } = await supabase
+          .from("submissions")
+          .select("id")
+          .eq("deal_id", dealId)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
         if (cancelled || !sub?.id) {
           if (!cancelled) {
             setFileList([]);
-            setSyncing(false);
           }
           return;
         }
-        return supabase
+        const { data: filesData } = await supabase
           .from("submission_files")
           .select("id, original_filename, display_name, size_bytes, storage_path, created_at")
           .eq("submission_id", sub.id)
           .eq("is_deleted", false)
           .order("created_at", { ascending: false });
-      })
-      .then((res) => {
-        if (cancelled || !res?.data) {
-          if (!cancelled) setSyncing(false);
+        if (cancelled) return;
+        if (!filesData) {
           return;
         }
-        const rows = (res.data as { id?: string; original_filename?: string | null; display_name?: string | null; size_bytes?: number | null; storage_path?: string | null; created_at?: string | null }[]).map(
+        const rows = (filesData as { id?: string; original_filename?: string | null; display_name?: string | null; size_bytes?: number | null; storage_path?: string | null; created_at?: string | null }[]).map(
           (f) => ({
             id: f.id ?? "",
             filename: (f.original_filename || f.display_name || "File") ?? "File",
@@ -89,11 +87,12 @@ export default function WizardStep2Page() {
           })
         );
         setFileList(rows);
-        setSyncing(false);
-      })
-      .catch(() => {
+      } catch {
+        // ignore; syncing cleared in finally
+      } finally {
         if (!cancelled) setSyncing(false);
-      });
+      }
+    })();
     return () => { cancelled = true; };
   }, [dealId, syncTrigger]);
 

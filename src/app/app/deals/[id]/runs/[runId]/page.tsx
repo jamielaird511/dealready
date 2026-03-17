@@ -628,11 +628,11 @@ export default function RunResultsPage() {
       </div>
 
       {/* Legacy submission completeness card (hidden under new incomplete-pack model) */}
-      {false && run.doc_completeness_snapshot && (
+      {false && (
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4">
           <h2 className="text-sm font-bold text-slate-700 mb-2">Submission completeness</h2>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-slate-600">
-            <span className="font-semibold text-slate-900">{run.doc_completeness_snapshot.completenessPct}%</span>
+            <span className="font-semibold text-slate-900">{(run as { doc_completeness_snapshot?: { completenessPct?: number } } | null)?.doc_completeness_snapshot?.completenessPct}%</span>
           </div>
         </div>
       )}
@@ -780,11 +780,11 @@ export default function RunResultsPage() {
             </div>
           )}
 
-          {false && dealsenseSummary.informationGaps && dealsenseSummary.informationGaps.length > 0 && (
+          {false && (
             <div>
               <h3 className="text-sm font-semibold text-amber-800 mb-2">Information gaps</h3>
               <div className="space-y-3 text-sm text-slate-700">
-                {dealsenseSummary.informationGaps.map((gap, idx) => {
+                {(dealsenseSummary?.informationGaps ?? []).map((gap, idx) => {
                   const state = clarifyState[gap.question_id] ?? {
                     open: false,
                     documentHint: "",
@@ -900,35 +900,35 @@ export default function RunResultsPage() {
       )}
 
       {/* Key Actions (hidden to reduce clutter) */}
-      {false && report && (report.summary.must_resolve.length > 0 || report.summary.should_improve.length > 0 || report.summary.optional.length > 0) && (
+      {false && (
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
           <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 16, color: "#111827" }}>Key actions</h2>
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-            {report.summary.must_resolve.length > 0 && (
+            {(report as any)?.summary?.must_resolve?.length > 0 && (
               <div>
                 <h3 style={{ fontSize: 13, fontWeight: 600, color: "#991b1b", marginBottom: 6 }}>Must resolve before submission</h3>
                 <ul style={{ margin: 0, paddingLeft: 20, fontSize: 13, color: "#374151", lineHeight: 1.6 }}>
-                  {report.summary.must_resolve.map((item, i) => (
+                  {((report as any)?.summary?.must_resolve ?? []).map((item: string, i: number) => (
                     <li key={i}>{item}</li>
                   ))}
                 </ul>
               </div>
             )}
-            {report.summary.should_improve.length > 0 && (
+            {(report as any)?.summary?.should_improve?.length > 0 && (
               <div>
                 <h3 style={{ fontSize: 13, fontWeight: 600, color: "#92400e", marginBottom: 6 }}>Should improve before submission</h3>
                 <ul style={{ margin: 0, paddingLeft: 20, fontSize: 13, color: "#374151", lineHeight: 1.6 }}>
-                  {report.summary.should_improve.map((item, i) => (
+                  {((report as any)?.summary?.should_improve ?? []).map((item: string, i: number) => (
                     <li key={i}>{item}</li>
                   ))}
                 </ul>
               </div>
             )}
-            {report.summary.optional.length > 0 && (
+            {(report as any)?.summary?.optional?.length > 0 && (
               <div>
                 <h3 style={{ fontSize: 13, fontWeight: 600, color: "#065f46", marginBottom: 6 }}>Optional enhancements</h3>
                 <ul style={{ margin: 0, paddingLeft: 20, fontSize: 13, color: "#374151", lineHeight: 1.6 }}>
-                  {report.summary.optional.map((item, i) => (
+                  {((report as any)?.summary?.optional ?? []).map((item: string, i: number) => (
                     <li key={i}>{item}</li>
                   ))}
                 </ul>
@@ -1037,7 +1037,7 @@ export default function RunResultsPage() {
       </div>
 
       {/* Credit view (compact, structured – hidden) */}
-      {false && (run.status === "completed" || run.status === "failed") && (
+      {false && (
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
           <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 12, color: "#111827" }}>Credit view</h2>
           <div style={{ display: "flex", flexDirection: "column", gap: 8, fontSize: 13, color: "#334155" }}>
@@ -1059,13 +1059,13 @@ export default function RunResultsPage() {
       )}
 
       {/* Persisted transaction summary (from DealSense run – hidden) */}
-      {false && run.deal_summary_text && run.deal_summary_text.trim() && (
+      {false && (
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
           <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 12, color: "#111827" }}>
             Transaction summary
           </h2>
           <div style={{ fontSize: 13, color: "#334155", lineHeight: 1.6, whiteSpace: "pre-line" }}>
-            {run.deal_summary_text}
+            {(run as { deal_summary_text?: string | null } | null)?.deal_summary_text}
           </div>
         </div>
       )}
