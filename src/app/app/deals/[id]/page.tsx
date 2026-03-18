@@ -16,6 +16,8 @@ type SubmissionFileRow = {
   original_filename?: string;
   created_at?: string;
   category?: string;
+  doc_type?: string | null;
+  doc_type_confidence?: number | null;
   extraction_status?: string | null;
   extracted_at?: string | null;
   extraction_error?: string | null;
@@ -308,6 +310,20 @@ function FileItem({ file, getDownloadUrl, onDelete, onRefresh }: { file: Submiss
   const status = file.extraction_status ?? "queued";
   const canPreview = status === "succeeded" && typeof file.extracted_text === "string" && file.extracted_text.length > 0;
   const canRetry = status === "failed" || status === "queued";
+  const rawCategory = (file.category ?? "").toString().toLowerCase().trim();
+  const docTypeLabel = (() => {
+    if (rawCategory && rawCategory in CATEGORY_LABELS) return CATEGORY_LABELS[rawCategory]!;
+    const knownWizard = DOC_TYPES.some((d) => d.id === (file.category as any));
+    if (knownWizard && file.category) return getDocLabel(file.category as any);
+    return "Other / unknown";
+  })();
+  const confidenceLevel = (() => {
+    const n = typeof file.doc_type_confidence === "number" ? file.doc_type_confidence : null;
+    if (n == null) return null;
+    if (n >= 0.7) return "high";
+    if (n >= 0.4) return "medium";
+    return "low";
+  })();
 
   async function handleDownload(e: React.MouseEvent) {
     e.stopPropagation();
@@ -419,6 +435,10 @@ function FileItem({ file, getDownloadUrl, onDelete, onRefresh }: { file: Submiss
             >
               {file.display_name || file.original_filename}
             </div>
+            <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 6px", borderRadius: 4, background: "#eef2ff", color: "#3730a3" }}>
+              {docTypeLabel}
+              {confidenceLevel ? ` · ${confidenceLevel}` : ""}
+            </span>
             <span style={statusStyles[status] ?? statusStyles.queued}>{status}</span>
             {status === "succeeded" && typeof file.chunk_count === "number" && (
               <span style={{ fontSize: 11, color: "#6b7280" }}>Chunks: {file.chunk_count}</span>
@@ -426,7 +446,7 @@ function FileItem({ file, getDownloadUrl, onDelete, onRefresh }: { file: Submiss
           </div>
           {file.created_at && (
             <div style={{ fontSize: 11, color: "#6b7280" }}>
-              {new Date(file.created_at).toLocaleDateString()}
+              Uploaded {new Date(file.created_at).toLocaleString()}
             </div>
           )}
           {status === "failed" && typeof file.extraction_error === "string" && file.extraction_error && (
@@ -622,7 +642,7 @@ export default function DealPage() {
   ];
   
   const [notes, setNotes] = useState("");
-  const [purposeType, setPurposeType] = useState<string>("other");
+  const [purposeType, setPurposeType] = useState<string>("");
   const [purposeNotes, setPurposeNotes] = useState<string>("");
 
   // File upload state (using first submission automatically)
@@ -634,9 +654,13 @@ export default function DealPage() {
   
   // Upload modal state
   const [showUploadModal, setShowUploadModal] = useState(false);
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [displayName, setDisplayName] = useState("");
-  const [category, setCategory] = useState("financials");
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [dragActive, setDragActive] = useState(false);
+  const [batchPhase, setBatchPhase] = useState<"uploading" | null>(null);
+  const [batchTotal, setBatchTotal] = useState(0);
+  const [batchIndex, setBatchIndex] = useState(0);
+  const [batchCurrentName, setBatchCurrentName] = useState<string | null>(null);
+  const [workspacePhase, setWorkspacePhase] = useState<"processing_docs" | "running_dealsense" | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [showDetails, setShowDetails] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -660,6 +684,7 @@ export default function DealPage() {
   const scrollPositionRef = useRef<number>(0);
   const renameInputRef = useRef<HTMLInputElement>(null);
   const [mounted, setMounted] = useState(false);
+  const uploadAutoOpenedRef = useRef(false);
 
   // Upload Pack category accordion state
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
@@ -687,92 +712,128 @@ export default function DealPage() {
     if (tabParam === "documents") setActiveTab("documents");
   }, [tabParam]);
 
-  // Lightweight DealSense snapshot derived from latest run (if any)
+  // Auto-open upload flow when arriving from "Create deal"
+  useEffect(() => {
+    const shouldOpenUpload = searchParams.get("upload") === "1";
+    if (!shouldOpenUpload) return;
+    if (uploadAutoOpenedRef.current) return;
+    uploadAutoOpenedRef.current = true;
+    setActiveTab("overview");
+    setShowUploadModal(true);
+    const nextParams = new URLSearchParams(searchParams.toString());
+    nextParams.delete("upload");
+    const qs = nextParams.toString();
+    router.replace(`/app/deals/${dealId}${qs ? `?${qs}` : ""}`);
+  }, [searchParams, router, dealId]);
+
+  // DealSense deal briefing derived from latest run (if any)
   const dealSnapshotSummary = (() => {
     if (!latestRun || latestRun.status !== "completed") return null;
     const raw = (latestRun as any).deal_summary_data;
     if (!raw || typeof raw !== "object") return null;
-    const dealSummary = raw as any;
-    const summaryText = (field: any, kind?: "purpose" | "repayment") => {
-      const v = typeof field?.value === "string" ? field.value.trim() : "";
-      if (!v) {
-        if (kind === "purpose") return "Purpose not clearly described in pack";
-        if (kind === "repayment") return "Primary repayment source not clearly described";
-        return "Not clearly documented";
-      }
-      if (kind === "purpose") {
-        const lower = v.toLowerCase();
-        if (lower === "business_purchase") return "Business acquisition";
-        if (lower === "working_capital") return "Working capital";
-        if (lower === "property_purchase") return "Property purchase";
-        if (lower === "shareholder_buyout") return "Shareholder buyout";
-      }
-      return v;
-    };
+    const data = raw as any;
+
     const formatCurrencyShort = (value: number) => {
       const abs = Math.abs(value);
       if (abs >= 1_000_000) return `$${(value / 1_000_000).toFixed(1)}m`;
       if (abs >= 1_000) return `$${(value / 1_000).toFixed(1)}k`;
       return `$${value.toFixed(0)}`;
     };
-    const summaryNum = (field: any) => {
+    const fieldText = (field: any): string => {
+      const v = typeof field?.value === "string" ? field.value.trim() : "";
+      return v || "Not yet identified";
+    };
+    const fieldNumber = (field: any): string => {
       const v = typeof field?.value === "number" && Number.isFinite(field.value) ? field.value : null;
-      if (v == null) return "Not clearly documented";
-      return formatCurrencyShort(Math.round(v));
+      return v == null ? "Not yet identified" : formatCurrencyShort(Math.round(v));
     };
 
-    const purpose = summaryText(dealSummary.purpose, "purpose");
-    const repayment = summaryText(dealSummary.repayment_source, "repayment");
-    const amount = summaryNum(dealSummary.funding_requested);
-    const security = summaryText(dealSummary.security, undefined);
+    const answers = Array.isArray(data?.dealsense_questions) ? (data.dealsense_questions as any[]) : [];
+    const byId = new Map<string, any>();
+    for (const a of answers) {
+      const qid = typeof a?.question_id === "string" ? a.question_id.trim() : "";
+      if (qid) byId.set(qid, a);
+    }
+    const answerText = (questionId: string): string => {
+      const a = byId.get(questionId);
+      const rawAnswer = typeof a?.answer === "string" ? a.answer.trim() : "";
+      if (!rawAnswer || rawAnswer.toLowerCase().includes("could not determine")) return "Not yet identified";
+      return rawAnswer;
+    };
+
+    const borrower =
+      (typeof data?.borrower_name?.value === "string" && data.borrower_name.value.trim())
+        ? data.borrower_name.value.trim()
+        : answerText("borrower_entity");
+
+    const purpose = fieldText(data?.purpose);
+    const purchasePrice = fieldNumber(data?.purchase_price_total);
+    const equityContribution = answerText("equity_contribution");
+    const fundingRequested = answerText("bank_funding");
+    const security = answerText("security_assets");
+    const repaymentSource = fieldText(data?.repayment_source);
 
     const missing: string[] = [];
+    if (borrower === "Not yet identified") missing.push("Borrower / purchasing entity not yet identified");
+    if (purpose === "Not yet identified") missing.push("Purpose not yet identified");
+    if (purchasePrice === "Not yet identified") missing.push("Purchase price not yet identified");
+    if (equityContribution === "Not yet identified") missing.push("Equity contribution not yet identified");
+    if (fundingRequested === "Not yet identified") missing.push("Funding requested not yet identified");
+    if (security === "Not yet identified") missing.push("Security not yet identified");
+    if (repaymentSource === "Not yet identified") missing.push("Repayment source not yet identified");
 
-    // Borrower / purchasing entity – based on key_people
-    const keyPeople = Array.isArray((dealSummary as any).key_people) ? (dealSummary as any).key_people : [];
-    const hasBorrowerPerson = keyPeople.some((p: any) => {
-      const roleRaw = typeof p?.role === "string" ? p.role.trim().toLowerCase() : "";
-      return roleRaw === "borrower" || roleRaw === "applicant" || roleRaw === "purchaser";
-    });
-    if (!hasBorrowerPerson) {
-      missing.push("Borrower / purchasing entity not detected");
-    }
+    const unknowns = (Array.isArray(data?.key_unknowns) ? data.key_unknowns : [])
+      .map((u: any) => (typeof u?.bullet === "string" ? u.bullet.trim() : ""))
+      .filter(Boolean)
+      .slice(0, 6);
 
-    const purchasePrice = summaryNum((dealSummary as any).purchase_price);
-    if (purchasePrice === "Not clearly documented") {
-      missing.push("Purchase price not detected");
-    }
-
-    const equityContribution = summaryNum((dealSummary as any).equity_contribution);
-    if (equityContribution === "Not clearly documented") {
-      missing.push("Equity contribution not detected");
-    }
-
-    if (amount === "Not clearly documented") {
-      missing.push("Funding amount not detected");
-    }
-
-    const loanTermField = (dealSummary as any).loan_term;
-    const loanTermValue =
-      typeof loanTermField?.value === "string"
-        ? loanTermField.value.trim()
-        : typeof loanTermField?.value === "number"
-        ? String(loanTermField.value)
-        : "";
-    if (!loanTermValue) {
-      missing.push("Loan term not detected");
-    }
-
-    if (security === "Not clearly documented") {
-      missing.push("Security not detected");
-    }
-
-    if (repayment === "Primary repayment source not clearly described") {
-      missing.push("Primary repayment source not detected");
-    }
-
-    return { purpose, repayment, amount, security, missing };
+    return {
+      borrower,
+      purpose,
+      purchasePrice,
+      equityContribution,
+      fundingRequested,
+      security,
+      repaymentSource,
+      unknowns,
+      missing,
+    };
   })();
+
+  // Doc-pack-only hints (pre-run): lightweight, filename/category based.
+  const docPackHints = useMemo(() => {
+    if (latestRun && latestRun.status === "completed") return null;
+    if (!files || files.length === 0) return null;
+    const names = files
+      .map((f) => (f.display_name || f.original_filename || "").toString().toLowerCase())
+      .filter(Boolean);
+    const cats = new Set(
+      files
+        .map((f) => (f.category ?? "").toString().toLowerCase().trim())
+        .filter(Boolean)
+    );
+
+    const detected: string[] = [];
+    if (cats.has("broker_app")) detected.push("Application / deal summary");
+    if (cats.has("financials")) detected.push("Financials");
+    if (cats.has("forecasts")) detected.push("Forecasts");
+    if (cats.has("security")) detected.push("Security docs");
+    if (cats.has("business_plan")) detected.push("Business plan");
+    if (cats.has("tax")) detected.push("Tax docs");
+    if (detected.length === 0) detected.push("Documents uploaded");
+
+    const hasPurchaseSignals = names.some((n) => n.includes("spa") || n.includes("sale and purchase") || n.includes("purchase agreement"));
+    const hasValuationSignals = names.some((n) => n.includes("valuation") || n.includes("avm"));
+
+    return {
+      detected: detected.slice(0, 4),
+      hasPurchaseSignals,
+      hasValuationSignals: hasValuationSignals || cats.has("security"),
+    };
+  }, [files, latestRun]);
+
+  const hasCompletedDealSenseRun = latestRun?.status === "completed";
+  const isBrandNewEmptyDeal = files.length === 0 && !hasCompletedDealSenseRun;
 
   const wizardNextStep = useMemo(() => {
     if (!deal?.wizard_state) return 1;
@@ -858,7 +919,7 @@ export default function DealPage() {
       setName(data.name || "");
       setStatus(data.status || "draft");
       setNotes(data.notes || "");
-      setPurposeType(data.purpose_type ?? "other");
+      setPurposeType(data.purpose_type === "other" && !data.purpose_notes ? "" : (data.purpose_type ?? ""));
       setPurposeNotes(data.purpose_notes ?? "");
       setLoading(false);
     }
@@ -1050,11 +1111,11 @@ export default function DealPage() {
     return () => { cancelled = true; };
   }, [dealId]);
 
-  async function refreshLatestRun() {
+  async function refreshLatestRun(): Promise<RunRow | null> {
     if (!activeSubmissionId) {
       setLatestRun(null);
       setLatestFindings([]);
-      return;
+      return null;
     }
     setLatestRunLoading(true);
     setLatestRunError(null);
@@ -1072,10 +1133,12 @@ export default function DealPage() {
         setLatestRunError("Couldn't load run status");
         setLatestRun(null);
         setLatestFindings([]);
-        return;
+        return null;
       }
 
       const latest = runs?.[0] || null;
+      // TEMP: debug what the backend run returned (deal_summary_data/text/unknowns, etc.)
+      console.log("[DealPage] refreshLatestRun() latestRun:", latest);
       setLatestRun(latest);
 
       if (latest?.id) {
@@ -1102,11 +1165,88 @@ export default function DealPage() {
       } else {
         setLatestFindings([]);
       }
+      return latest;
     } catch (err) {
       console.error("Error loading latest run:", err);
       setLatestRunError("Couldn't load run status");
+      return null;
     } finally {
       setLatestRunLoading(false);
+    }
+  }
+
+  async function triggerDealSenseRun(submissionId: string): Promise<void> {
+    if (!submissionId || runAssessmentLoading) return;
+    setRunAssessmentLoading(true);
+    setRunCheckError(null);
+    try {
+      const res = await fetch(`/api/submissions/${submissionId}/run`, { method: "POST" });
+      const json = await res.json().catch(() => ({}));
+      if (!json?.ok || !json?.runId) {
+        setRunCheckError(json?.error ?? "Run checks failed");
+        return;
+      }
+      // Kick off processing for the queued run (otherwise it remains queued).
+      // Fire-and-forget: processing can take time; we poll status via refreshLatestRun().
+      void fetch(`/api/dealsense/runs/${json.runId}/execute`, { method: "POST", keepalive: true }).catch(() => {});
+
+      // Poll latest run until it completes (best-effort).
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < 90_000) {
+        const latest = await refreshLatestRun();
+        const status = latest?.status;
+        if (status === "completed" || status === "failed") break;
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    } catch (err) {
+      setRunCheckError(err instanceof Error ? err.message : "Run checks failed");
+    } finally {
+      setRunAssessmentLoading(false);
+    }
+  }
+
+  async function processUploadedFilesAndRun(submissionId: string, insertedIds: string[], nameById: Record<string, string>) {
+    if (!submissionId || insertedIds.length === 0) return;
+    setWorkspacePhase("processing_docs");
+    try {
+      for (let i = 0; i < insertedIds.length; i++) {
+        const id = insertedIds[i];
+        setBatchIndex(i + 1);
+        setBatchTotal(insertedIds.length);
+        setBatchCurrentName(nameById[id] ?? null);
+        try {
+          const extractRes = await fetch("/api/submission-files/extract", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ fileId: id }),
+            credentials: "include",
+          });
+          const extractText = await extractRes.text().catch(() => "");
+          let extractJson: any = {};
+          try {
+            extractJson = extractText ? JSON.parse(extractText) : {};
+          } catch {
+            extractJson = {};
+          }
+          if (!extractRes.ok || (!extractJson?.ok && !extractJson?.alreadyExtracted)) {
+            console.error("[Deal upload] Extraction failed:", { fileId: id, status: extractRes.status, body: extractText.slice(0, 300) });
+          } else {
+            await fetch(`/api/submission-files/${id}/classify`, { method: "POST", credentials: "include" });
+          }
+        } catch (err) {
+          console.error("[Deal upload] Extract/classify request failed:", err);
+        }
+      }
+
+      await refreshFiles();
+      setWorkspacePhase("running_dealsense");
+      await triggerDealSenseRun(submissionId);
+      await refreshFiles();
+    } finally {
+      setWorkspacePhase(null);
+      setBatchTotal(0);
+      setBatchIndex(0);
+      setBatchCurrentName(null);
     }
   }
 
@@ -1173,7 +1313,7 @@ export default function DealPage() {
         .update({
           status: status,
           notes: notes.trim() || null,
-          purpose_type: purposeType,
+          purpose_type: purposeType || "other",
           purpose_notes: purposeType === "other" ? (purposeNotes.trim() || null) : null,
           updated_at: new Date().toISOString(),
         })
@@ -1200,7 +1340,7 @@ export default function DealPage() {
       setName(updatedDeal.name || "");
       setStatus(updatedDeal.status || "draft");
       setNotes(updatedDeal.notes || "");
-      setPurposeType(updatedDeal.purpose_type ?? "other");
+      setPurposeType(updatedDeal.purpose_type === "other" && !updatedDeal.purpose_notes ? "" : (updatedDeal.purpose_type ?? ""));
       setPurposeNotes(updatedDeal.purpose_notes ?? "");
       setSaveMessage({ type: "success", text: "Saved" });
       setTimeout(() => setSaveMessage(null), 3000);
@@ -1330,10 +1470,8 @@ export default function DealPage() {
   }
 
   function openUploadForChecklist(accepted: string[], suggestedDisplayName?: string) {
-    const pre = normalizeAcceptedToUploadCategory(accepted);
-    setCategory(pre);
-    setDisplayName(suggestedDisplayName ?? "");
-    setSelectedFile(null);
+    // Legacy entrypoint: open deal-pack modal; types can be refined later.
+    setSelectedFiles([]);
     setShowUploadModal(true);
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
@@ -1341,21 +1479,20 @@ export default function DealPage() {
   }
 
   function handleFileSelectInModal(event: React.ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0] ?? null;
-    setSelectedFile(file);
-    if (file) {
-      // Auto-fill display name only if it's empty or unchanged (matches previous file name)
-      if (!displayName || displayName === selectedFile?.name) {
-        setDisplayName(file.name);
-      }
-    }
+    const list = Array.from(event.target.files ?? []);
+    if (list.length === 0) return;
+    setSelectedFiles((prev) => [...prev, ...list]);
   }
 
   async function handleFileUpload() {
-    if (!selectedFile || !category || uploading) return;
+    if (selectedFiles.length === 0 || uploading) return;
 
     setUploading(true);
     setFilesError(null);
+    setBatchPhase("uploading");
+    setBatchTotal(selectedFiles.length);
+    setBatchIndex(0);
+    setBatchCurrentName(null);
     const supabase = supabaseBrowser();
 
     const { data: { user } } = await supabase.auth.getUser();
@@ -1432,147 +1569,71 @@ export default function DealPage() {
     }
 
     try {
-      const timestamp = Date.now();
-      const storagePath = `${submissionId}/${timestamp}_${selectedFile.name}`;
       const bucketName = "deal-packs";
+      const batch = selectedFiles;
+      const insertedIds: string[] = [];
+      const nameById: Record<string, string> = {};
 
-      const { error: uploadError } = await supabase.storage
-        .from(bucketName)
-        .upload(storagePath, selectedFile, {
-          upsert: false,
-          contentType: selectedFile.type,
-        });
+      for (let i = 0; i < batch.length; i++) {
+        const file = batch[i];
+        setBatchIndex(i + 1);
+        setBatchCurrentName(file.name);
+        const timestamp = Date.now();
+        const storagePath = `${submissionId}/${timestamp}_${file.name}`;
 
-      if (uploadError) {
-        console.error("Error uploading file:", uploadError);
-        alert("Error uploading file. Please try again.");
-        setUploading(false);
-        return;
-      }
-
-      const validCategories = ["financials", "tax", "forecasts", "business_plan", "broker_app", "security", "other"];
-      const safeCategory = validCategories.includes(category) ? category : "other";
-      const categoryForDb = LEGACY_CATEGORY_TO_WIZARD_DOC_ID[safeCategory];
-      if (categoryForDb == null) {
-        alert("This document category is not supported for upload. Please use a supported category (e.g. Financials, Forecasts, Broker application/SoP, Security, Identification).");
-        setUploading(false);
-        return;
-      }
-      const wizardDocIds = new Set(DOC_TYPES.map((d) => d.id));
-      if (!wizardDocIds.has(categoryForDb)) {
-        alert("Invalid document category. Please try again.");
-        setUploading(false);
-        return;
-      }
-
-      const insertData = {
-        submission_id: submissionId,
-        storage_path: storagePath,
-        original_filename: selectedFile.name,
-        display_name: displayName.trim() || selectedFile.name,
-        category: categoryForDb,
-        mime_type: selectedFile.type,
-        size_bytes: selectedFile.size
-      };
-
-      const { data: insertedFile, error: insertError } = await supabase
-        .from("submission_files")
-        .insert(insertData)
-        .select("id")
-        .single();
-
-      if (insertError) {
-        console.error("Error inserting file record:", {
-          message: insertError.message,
-          details: insertError.details,
-          hint: insertError.hint,
-          code: insertError.code,
-        });
-        alert(`Error saving file record: ${insertError.message || "Please try again."}`);
-        setUploading(false);
-        return;
-      }
-
-      // Refresh files list so new file appears
-      const { data: refreshedFiles } = await supabase
-        .from("submission_files")
-        .select("*")
-        .eq("submission_id", submissionId)
-        .order("created_at", { ascending: false });
-
-      if (refreshedFiles) {
-        setFiles(refreshedFiles);
-      }
-
-      if (insertedFile?.id) {
-        console.log("[Deal upload] Inserted file id:", insertedFile.id);
-
-        try {
-          const extractRes = await fetch("/api/submission-files/extract", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ fileId: insertedFile.id }),
-            credentials: "include",
+        const { error: uploadError } = await supabase.storage
+          .from(bucketName)
+          .upload(storagePath, file, {
+            upsert: false,
+            contentType: file.type,
           });
-
-          const extractText = await extractRes.text().catch(() => "");
-          let extractJson: any = {};
-          try {
-            extractJson = extractText ? JSON.parse(extractText) : {};
-          } catch {
-            extractJson = {};
-          }
-
-          if (!extractRes.ok || (!extractJson?.ok && !extractJson?.alreadyExtracted)) {
-            console.error("[Deal upload] Extraction failed:", {
-              fileId: insertedFile.id,
-              status: extractRes.status,
-              body: extractText.slice(0, 500),
-            });
-            alert(extractJson?.error ?? "File uploaded but extraction failed. See console for details.");
-            await refreshFiles();
-          } else {
-            const classifyRes = await fetch(`/api/submission-files/${insertedFile.id}/classify`, {
-              method: "POST",
-              credentials: "include",
-            });
-
-            const classifyText = await classifyRes.text().catch(() => "");
-            let classifyJson: any = {};
-            try {
-              classifyJson = classifyText ? JSON.parse(classifyText) : {};
-            } catch {
-              classifyJson = {};
-            }
-
-            if (!classifyRes.ok || !classifyJson?.ok) {
-              console.error("[Deal upload] Classification failed:", {
-                fileId: insertedFile.id,
-                status: classifyRes.status,
-                body: classifyText.slice(0, 500),
-              });
-              alert(classifyJson?.error ?? "File extracted but classification failed. See console for details.");
-            }
-
-            await refreshFiles();
-          }
-        } catch (err) {
-          console.error("[Deal upload] Extract/classify request failed:", err);
-          alert("File uploaded but processing failed. See console for details.");
-          await refreshFiles();
+        if (uploadError) {
+          console.error("Error uploading file:", uploadError);
+          alert(`Error uploading ${file.name}. Please try again.`);
+          continue;
         }
+
+        const insertData = {
+          submission_id: submissionId,
+          storage_path: storagePath,
+          original_filename: file.name,
+          display_name: file.name,
+          category: "other",
+          mime_type: file.type,
+          size_bytes: file.size,
+        };
+
+        const { data: insertedFile, error: insertError } = await supabase
+          .from("submission_files")
+          .insert(insertData)
+          .select("id")
+          .single();
+
+        if (insertError || !insertedFile?.id) {
+          console.error("Error inserting file record:", insertError);
+          alert(`Error saving record for ${file.name}.`);
+          continue;
+        }
+        insertedIds.push(insertedFile.id);
+        nameById[insertedFile.id] = file.name;
       }
 
-      // Reset modal
+      // Close modal once uploads finish; analysis runs from workspace state.
       setShowUploadModal(false);
-      setSelectedFile(null);
-      setDisplayName("");
-      setCategory("financials");
+      setSelectedFiles([]);
+      setDragActive(false);
+      setBatchPhase(null);
+      setBatchTotal(0);
+      setBatchIndex(0);
+      setBatchCurrentName(null);
       setUploading(false);
       // Reset file input
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
       }
+
+      await refreshFiles();
+      void processUploadedFilesAndRun(submissionId, insertedIds, nameById);
     } catch (err) {
       console.error("Error:", err);
       setUploading(false);
@@ -1889,23 +1950,27 @@ export default function DealPage() {
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
+              onClick={handleFileSelectButton}
+              disabled={uploading}
+              style={{
+                padding: "8px 16px",
+                fontSize: 14,
+                fontWeight: 600,
+                borderRadius: 8,
+                border: "1px solid #4f46e5",
+                background: uploading ? "#c7d2fe" : "white",
+                color: "#4f46e5",
+                cursor: uploading ? "not-allowed" : "pointer",
+                opacity: uploading ? 0.8 : 1,
+              }}
+            >
+              Upload deal pack
+            </button>
+            <button
+              type="button"
               onClick={async () => {
-                if (!activeSubmissionId || runAssessmentLoading) return;
-                setRunAssessmentLoading(true);
-                setRunCheckError(null);
-                try {
-                  const res = await fetch(`/api/submissions/${activeSubmissionId}/run`, { method: "POST" });
-                  const json = await res.json().catch(() => ({}));
-                  if (json?.ok && json?.runId) {
-                    await refreshLatestRun();
-                  } else {
-                    setRunCheckError(json?.error ?? "Run checks failed");
-                  }
-                } catch (err) {
-                  setRunCheckError(err instanceof Error ? err.message : "Run checks failed");
-                } finally {
-                  setRunAssessmentLoading(false);
-                }
+                if (!activeSubmissionId) return;
+                await triggerDealSenseRun(activeSubmissionId);
               }}
               disabled={!activeSubmissionId || runAssessmentLoading}
               style={{
@@ -2011,6 +2076,20 @@ export default function DealPage() {
             </span>
           )}
         </div>
+        {(workspacePhase || runAssessmentLoading) && (
+          <div className="mt-3 rounded-lg border border-indigo-100 bg-indigo-50 px-4 py-3 text-sm text-indigo-900">
+            <div className="font-semibold">
+              {workspacePhase === "processing_docs"
+                ? "Analyzing deal pack… extracting document text"
+                : "Running DealSense credit checks…"}
+            </div>
+            {batchCurrentName && (
+              <div className="mt-1 text-xs text-indigo-800" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {batchCurrentName}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {fromWizard && (
@@ -2663,218 +2742,124 @@ export default function DealPage() {
       {/* Tab content: Overview */}
       {activeTab === "overview" && (
         <>
-      {/* Upload-first workspace panels */}
-      <div className="grid grid-cols-1 gap-4 mb-4 md:grid-cols-2 lg:grid-cols-4">
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
-          <h2 className="text-base font-semibold text-slate-900 mb-2">Upload deal pack</h2>
-          {files.length === 0 ? (
-            <p className="text-sm text-slate-600 mb-3">
-              This deal doesn&apos;t have any documents yet. Upload the deal pack to start analysis.
-            </p>
-          ) : (
-            <p className="text-sm text-slate-600 mb-3">
-              Add or replace documents as the deal evolves. DealSense will reassess based on what&apos;s in the pack.
-            </p>
-          )}
-          <button
-            type="button"
-            onClick={handleFileSelectButton}
-            className="inline-flex items-center justify-center rounded-md bg-indigo-600 px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-indigo-700"
-          >
-            {files.length === 0 ? "Upload documents" : "Add documents"}
-          </button>
-        </div>
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
-          <h2 className="text-base font-semibold text-slate-900 mb-2">Deal snapshot</h2>
-          {!latestRun || latestRun.status !== "completed" || !dealSnapshotSummary ? (
-            <p className="text-sm text-slate-600">
-              Upload documents and run analysis to populate this summary.
-            </p>
-          ) : (
+      {(() => {
+        const hasDocs = files.length > 0;
+        const analysisComplete = latestRun?.status === "completed";
+        const analysisFailed = latestRun?.status === "failed" || !!runCheckError || !!latestRunError;
+        const isProcessingDocs = uploading || workspacePhase === "processing_docs";
+        const isRunningAnalysis = workspacePhase === "running_dealsense" || latestRun?.status === "running" || runAssessmentLoading;
+
+        const summaryPlaceholder = !hasDocs
+          ? "No documents uploaded yet."
+          : analysisFailed
+          ? "We couldn’t complete analysis from this pack. You can retry from the header."
+          : isProcessingDocs
+          ? "Reading documents and extracting deal details…"
+          : isRunningAnalysis
+          ? "Analyzing deal pack… identifying missing information and credit issues…"
+          : "Preparing analysis from the current pack…";
+
+        const narrativePlaceholder = !hasDocs
+          ? "Upload a deal pack to generate a plain-English deal summary."
+          : analysisFailed
+          ? "Deal narrative wasn’t generated. Retry analysis from the header."
+          : isProcessingDocs
+          ? "Building the deal summary…"
+          : isRunningAnalysis
+          ? "Generating plain-English deal narrative…"
+          : "Deal narrative will appear once analysis finishes.";
+
+        const unknownsPlaceholder = !hasDocs
+          ? "Upload documents and DealReady will highlight what’s missing."
+          : analysisFailed
+          ? "Unknowns couldn’t be identified yet. Retry analysis from the header."
+          : isProcessingDocs
+          ? "Identifying key unknowns from the pack…"
+          : isRunningAnalysis
+          ? "Finding the missing information credit will ask for…"
+          : "Unknowns will appear once analysis finishes.";
+
+        return (
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        {/* Deal summary */}
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 lg:col-span-1">
+          <h2 className="text-base font-semibold text-slate-900 mb-2">Deal summary</h2>
+          {analysisComplete && dealSnapshotSummary ? (
             <dl className="grid grid-cols-1 gap-2 text-sm text-slate-800">
-              <div className="flex gap-2">
-                <dt className="w-32 shrink-0 text-slate-500 font-medium">Purpose</dt>
-                <dd className="flex-1">{dealSnapshotSummary.purpose}</dd>
-              </div>
-              <div className="flex gap-2">
-                <dt className="w-32 shrink-0 text-slate-500 font-medium">Funding requested</dt>
-                <dd className="flex-1">{dealSnapshotSummary.amount}</dd>
-              </div>
-              <div className="flex gap-2">
-                <dt className="w-32 shrink-0 text-slate-500 font-medium">Primary repayment</dt>
-                <dd className="flex-1">{dealSnapshotSummary.repayment}</dd>
-              </div>
-              <div className="flex gap-2">
-                <dt className="w-32 shrink-0 text-slate-500 font-medium">Security</dt>
-                <dd className="flex-1">{dealSnapshotSummary.security}</dd>
-              </div>
+              {[
+                ["Borrower / purchaser", dealSnapshotSummary.borrower],
+                ["Purpose", dealSnapshotSummary.purpose],
+                ["Purchase price", dealSnapshotSummary.purchasePrice],
+                ["Equity contribution", dealSnapshotSummary.equityContribution],
+                ["Funding requested", dealSnapshotSummary.fundingRequested],
+                ["Security", dealSnapshotSummary.security],
+                ["Repayment source", dealSnapshotSummary.repaymentSource],
+              ].map(([label, value]) => (
+                <div key={label} className="flex gap-2">
+                  <dt className="w-44 shrink-0 text-slate-500 font-medium">{label}</dt>
+                  <dd className="flex-1">{value}</dd>
+                </div>
+              ))}
             </dl>
+          ) : docPackHints && hasDocs && !analysisFailed && !isProcessingDocs && !isRunningAnalysis ? (
+            <div className="space-y-2">
+              <p className="text-sm text-slate-600">{summaryPlaceholder}</p>
+              <div className="text-xs text-slate-500">
+                Pack signals: {docPackHints.detected.join(" · ")}
+                {docPackHints.hasPurchaseSignals ? " · Purchase docs detected" : ""}
+                {docPackHints.hasValuationSignals ? " · Valuation/security detected" : ""}
+              </div>
+            </div>
+          ) : (
+            <p className="text-sm text-slate-600">{summaryPlaceholder}</p>
           )}
         </div>
 
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
-          <h2 className="text-base font-semibold text-slate-900 mb-2">Credit readiness</h2>
-          {!latestRun || latestRun.status !== "completed" || latestFindings.length === 0 ? (
-            <p className="text-sm text-slate-600">
-              Run deal analysis to see credit feedback and deal readiness.
-            </p>
+        {/* Deal narrative */}
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 lg:col-span-2">
+          <h2 className="text-base font-semibold text-slate-900 mb-2">Deal narrative</h2>
+          {analysisComplete ? (
+            <div className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">
+              {(latestRun as any).deal_summary_text || "Deal summary narrative not yet available."}
+            </div>
+          ) : docPackHints && hasDocs && !analysisFailed && !isProcessingDocs && !isRunningAnalysis ? (
+            <div className="space-y-2">
+              <p className="text-sm text-slate-600">{narrativePlaceholder}</p>
+              <div className="text-xs text-slate-500">
+                Detected: {docPackHints.detected.join(" · ")}
+              </div>
+            </div>
           ) : (
-            <>
-              <div className="flex flex-wrap items-center gap-2 mb-3 text-xs">
-                <span className="px-2 py-1 rounded-md bg-rose-100 text-rose-800 font-semibold">
-                  Critical: {latestFindings.filter((f) => f.severity === "critical").length}
-                </span>
-                <span className="px-2 py-1 rounded-md bg-amber-100 text-amber-800 font-semibold">
-                  Warnings: {latestFindings.filter((f) => f.severity === "warning").length}
-                </span>
-                <span className="px-2 py-1 rounded-md bg-emerald-100 text-emerald-800 font-semibold">
-                  Info: {latestFindings.filter((f) => f.severity === "info").length}
-                </span>
-              </div>
-              <div className="text-xs text-slate-500 mb-2">
-                Latest run: {latestRun.created_at ? new Date(latestRun.created_at).toLocaleString() : "unknown"}
-              </div>
-              <div className="mt-1">
-                <div className="text-xs font-semibold text-slate-700 mb-1">Top issues</div>
-                {Array.isArray(latestRun.top_fixes) && latestRun.top_fixes.length > 0 ? (
-                  <ul className="list-disc pl-5 text-sm text-slate-700 space-y-1">
-                    {latestRun.top_fixes.slice(0, 3).map((fix, i) => (
-                      <li key={i}>{fix}</li>
-                    ))}
-                  </ul>
-                ) : (
-                  <ul className="list-disc pl-5 text-sm text-slate-700 space-y-1">
-                    {latestFindings.slice(0, 3).map((f, i) => (
-                      <li key={f.id ?? i}>{f.title ?? "Issue highlighted by DealSense"}</li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            </>
+            <p className="text-sm text-slate-600">{narrativePlaceholder}</p>
           )}
         </div>
 
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 lg:col-span-1 md:col-span-2">
-          <h2 className="text-base font-semibold text-slate-900 mb-2">Information still needed</h2>
-          {!latestRun || latestRun.status !== "completed" || !dealSnapshotSummary ? (
-            <p className="text-sm text-slate-600">
-              Once analysis has run, DealSense will highlight any key deal details that are still unclear.
-            </p>
-          ) : dealSnapshotSummary.missing.length === 0 ? (
-            <p className="text-sm text-slate-600">
-              No major information gaps detected.
-            </p>
+        {/* Unknowns */}
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 lg:col-span-3">
+          <h2 className="text-base font-semibold text-slate-900 mb-2">Unknowns / information still needed</h2>
+          {analysisComplete && dealSnapshotSummary ? (
+            dealSnapshotSummary.unknowns.length > 0 ? (
+              <ul className="list-disc pl-5 text-sm text-slate-700 space-y-1">
+                {dealSnapshotSummary.unknowns.slice(0, 5).map((u: string, idx: number) => (
+                  <li key={idx}>{u}</li>
+                ))}
+              </ul>
+            ) : dealSnapshotSummary.missing.length > 0 ? (
+              <ul className="list-disc pl-5 text-sm text-slate-700 space-y-1">
+                {dealSnapshotSummary.missing.slice(0, 5).map((m: string, idx: number) => (
+                  <li key={idx}>{m}</li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-sm text-slate-600">No major unknowns detected from the current pack.</p>
+            )
           ) : (
-            <ul className="list-disc pl-5 text-sm text-slate-700 space-y-1">
-              {(() => {
-                const priority = (item: string): number => {
-                  if (item.startsWith("Borrower / purchasing entity")) return 1;
-                  if (item.startsWith("Equity contribution")) return 2;
-                  if (item.startsWith("Purchase price")) return 3;
-                  if (item.startsWith("Funding amount")) return 4;
-                  if (item.startsWith("Loan term")) return 5;
-                  if (item.startsWith("Security")) return 6;
-                  if (item.startsWith("Primary repayment source")) return 7;
-                  return 99;
-                };
-                const ordered = [...dealSnapshotSummary.missing].sort(
-                  (a, b) => priority(a) - priority(b)
-                );
-                return ordered.slice(0, 3).map((item, idx) => (
-                  <li key={idx}>{item}</li>
-                ));
-              })()}
-            </ul>
+            <p className="text-sm text-slate-600">{unknownsPlaceholder}</p>
           )}
         </div>
       </div>
-
-      {/* Latest DealSense Card - informational only */}
-      {!latestRunLoading && (
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm px-5 py-3 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3 flex-wrap">
-            <h2 className="text-sm font-semibold text-gray-900 mr-1">Latest DealSense</h2>
-            {latestRunError ? (
-              <span className="text-xs text-rose-700">{latestRunError}</span>
-            ) : !latestRun ? (
-              <span className="text-xs text-slate-500">No DealSense run yet.</span>
-            ) : (
-              <>
-                {latestRun.status && (
-                  <span
-                    style={{
-                      padding: "3px 8px",
-                      borderRadius: 9999,
-                      background:
-                        latestRun.status === "completed" ? "#d1fae5"
-                          : latestRun.status === "running" ? "#dbeafe"
-                          : latestRun.status === "failed" ? "#fee2e2"
-                          : "#e5e7eb",
-                      color:
-                        latestRun.status === "completed" ? "#065f46"
-                          : latestRun.status === "running" ? "#1e40af"
-                          : latestRun.status === "failed" ? "#991b1b"
-                          : "#374151",
-                      fontSize: 11,
-                      fontWeight: 600,
-                      textTransform: "capitalize",
-                    }}
-                  >
-                    {latestRun.status}
-                  </span>
-                )}
-                {latestFindings.length > 0 && (
-                  <>
-                    <span className="px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 text-xs font-semibold">
-                      C: {latestFindings.filter((f) => f.severity === "critical").length}
-                    </span>
-                    <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-xs font-semibold">
-                      W: {latestFindings.filter((f) => f.severity === "warning").length}
-                    </span>
-                    <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-xs font-semibold">
-                      I: {latestFindings.filter((f) => f.severity === "info").length}
-                    </span>
-                  </>
-                )}
-                {latestRun.created_at && (
-                  <span className="text-xs text-slate-500">
-                    {new Date(latestRun.created_at).toLocaleString()}
-                  </span>
-                )}
-              </>
-            )}
-          </div>
-          <div className="flex items-center gap-2 flex-wrap">
-            {latestRun && activeSubmissionId && (
-              <button
-                type="button"
-                onClick={() => router.push(`/app/submissions/${activeSubmissionId}`)}
-                className="px-3 py-1.5 text-xs font-semibold rounded-md border border-slate-300 bg-white text-slate-800 hover:bg-slate-50"
-              >
-                View latest results
-              </button>
-            )}
-            {dealId && latestRun && (
-              <button
-                type="button"
-                onClick={() => router.push(`/app/deals/${dealId}/wizard/step-4`)}
-                className="px-3 py-1.5 text-xs font-semibold rounded-md border border-indigo-600 bg-indigo-600 text-white hover:bg-indigo-700"
-              >
-                Run again
-              </button>
-            )}
-            {dealId && !latestRun && (
-              <button
-                type="button"
-                onClick={() => router.push(`/app/deals/${dealId}/wizard/step-4`)}
-                className="px-3 py-1.5 text-xs font-semibold rounded-md border border-indigo-600 bg-indigo-600 text-white hover:bg-indigo-700"
-              >
-                Run checks
-              </button>
-            )}
-          </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Deal Details (overview): saveMessage, Notes, Save */}
       {deal && (
@@ -2903,6 +2888,7 @@ export default function DealPage() {
               onChange={(e) => setPurposeType(e.target.value)}
               style={{ width: "100%", padding: "10px 12px", fontSize: 14, border: "1px solid rgba(0,0,0,0.2)", borderRadius: 8, outline: "none", background: "white" }}
             >
+              <option value="">Not set</option>
               <option value="business_purchase">Business purchase</option>
               <option value="startup">Start-up / new business</option>
               <option value="refinance">Refinance / restructure</option>
@@ -3246,10 +3232,15 @@ export default function DealPage() {
         })()}
       </div>
 
-      {/* Upload Pack Section */}
+      {/* Deal pack */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
         <div className="flex justify-between items-center mb-4">
-          <h2 className="text-xl font-semibold mb-0 text-gray-900">Upload Pack</h2>
+          <div>
+            <h2 className="text-xl font-semibold mb-0 text-gray-900">Deal pack</h2>
+            <p style={{ fontSize: 13, color: "#6b7280", marginTop: 4, marginBottom: 0 }}>
+              These are the documents currently in the deal pack. You can keep adding to the pack as the deal develops.
+            </p>
+          </div>
           <button
             onClick={handleFileSelectButton}
             style={{
@@ -3262,7 +3253,7 @@ export default function DealPage() {
               background: "white",
             }}
           >
-            Upload File
+            Upload deal pack
           </button>
         </div>
 
@@ -3333,160 +3324,62 @@ export default function DealPage() {
 
         {filesLoading ? (
           <p style={{ fontSize: 14, color: "#6b7280" }}>Loading files...</p>
+        ) : files.length === 0 ? (
+          <div style={{ padding: 16, borderRadius: 10, border: "1px dashed #cbd5e1", background: "#f8fafc" }}>
+            <div style={{ fontWeight: 800, color: "#0f172a", marginBottom: 4 }}>No documents yet</div>
+            <div style={{ fontSize: 13, color: "#64748b", marginBottom: 12 }}>
+              Upload the deal pack to start extraction and DealSense analysis.
+            </div>
+            <button
+              type="button"
+              onClick={handleFileSelectButton}
+              className="inline-flex items-center justify-center rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-700"
+            >
+              Upload documents
+            </button>
+          </div>
         ) : (() => {
-          const categories = [
-            { key: "financials", label: "Financials" },
-            { key: "forecasts", label: "Forecasts" },
-            { key: "business_plan", label: "Business Plan" },
-            { key: "broker_app", label: "Broker Application/SoP" },
-            { key: "security", label: "Security" },
-            { key: "other", label: "Other" },
-          ];
+          const list = [...files].sort((a, b) => (b.created_at ?? "").localeCompare(a.created_at ?? ""));
+          const failed = list.filter((f) => (f.extraction_status ?? "queued") === "failed");
+          const processing = list.filter((f) => {
+            const s = f.extraction_status ?? "queued";
+            return s === "queued" || s === "processing";
+          });
+          const ready = list.filter((f) => (f.extraction_status ?? "queued") === "succeeded");
 
-          const categoryFiles = categories.map(cat => ({
-            ...cat,
-            files: files.filter(f => f.category === cat.key),
-            count: files.filter(f => f.category === cat.key).length,
-          }));
-
-          const hasAnyFiles = files.length > 0;
-          const emptyCategories = categoryFiles.filter(cat => cat.count === 0);
-
-          if (!hasAnyFiles) {
-            return <p style={{ fontSize: 14, color: "#6b7280" }}>No files uploaded yet.</p>;
-          }
-
-          const visibleCategories = showEmptyCategories 
-            ? categoryFiles 
-            : categoryFiles.filter(cat => cat.count > 0);
+          const groups: Array<{ key: string; label: string; helper: string; items: SubmissionFileRow[] }> = [
+            { key: "processing", label: "Processing", helper: "Extraction/classification running or queued.", items: processing },
+            { key: "needs_attention", label: "Needs attention", helper: "Extraction failed — retry or re-upload if needed.", items: failed },
+            { key: "ready", label: "Ready", helper: "Extracted and ready for DealSense to use.", items: ready },
+          ].filter((g) => g.items.length > 0);
 
           return (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {emptyCategories.length > 0 && (
-                <label
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 8,
-                    cursor: "pointer",
-                    marginBottom: 4,
-                  }}
-                >
-                  <span style={{ fontSize: 13, color: "#374151" }}>Show empty categories</span>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={showEmptyCategories}
-                    aria-label="Show empty categories"
-                    onClick={() => setShowEmptyCategories(!showEmptyCategories)}
-                    onKeyDown={(e) => {
-                      if (e.key === " " || e.key === "Enter") {
-                        e.preventDefault();
-                        setShowEmptyCategories(!showEmptyCategories);
-                      }
-                    }}
-                    style={{
-                      position: "relative",
-                      width: 44,
-                      height: 24,
-                      borderRadius: 12,
-                      background: showEmptyCategories ? "#10b981" : "#d1d5db",
-                      border: "none",
-                      cursor: "pointer",
-                      outline: "none",
-                      transition: "background-color 0.2s",
-                      padding: 0,
-                    }}
-                    onMouseEnter={(e) => {
-                      if (!showEmptyCategories) {
-                        e.currentTarget.style.background = "#9ca3af";
-                      }
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.background = showEmptyCategories ? "#10b981" : "#d1d5db";
-                    }}
-                  >
-                    <span
-                      style={{
-                        position: "absolute",
-                        top: 2,
-                        left: showEmptyCategories ? 22 : 2,
-                        width: 20,
-                        height: 20,
-                        borderRadius: "50%",
-                        background: "white",
-                        transition: "left 0.2s",
-                        boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
-                      }}
-                    />
-                  </button>
-                </label>
-              )}
-              {visibleCategories.map((category) => {
-                const isExpanded = expandedCategories.has(category.key);
-                return (
-                  <div key={category.key} style={{ borderRadius: 8, background: "white", boxShadow: "0 2px 4px rgba(0,0,0,0.08)", marginBottom: 8 }}>
-                    <button
-                      onClick={() => {
-                        const newExpanded = new Set(expandedCategories);
-                        if (isExpanded) {
-                          newExpanded.delete(category.key);
-                        } else {
-                          newExpanded.add(category.key);
-                        }
-                        setExpandedCategories(newExpanded);
-                      }}
-                      style={{
-                        width: "100%",
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "center",
-                        padding: "8px 12px",
-                        background: "transparent",
-                        border: "none",
-                        cursor: "pointer",
-                        textAlign: "left",
-                      }}
-                    >
-                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <span
-                          style={{
-                            transform: isExpanded ? "rotate(90deg)" : "rotate(0deg)",
-                            transition: "transform 0.2s",
-                            display: "inline-block",
-                            fontSize: 12,
-                            color: "#6b7280",
-                          }}
-                        >
-                          ▶
-                        </span>
-                        <span style={{ fontSize: 14, fontWeight: 600, color: "#374151" }}>
-                          {category.label}
-                        </span>
-                        <span
-                          style={{
-                            padding: "2px 6px",
-                            borderRadius: 4,
-                            background: "#e5e7eb",
-                            color: "#6b7280",
-                            fontSize: 11,
-                            fontWeight: 600,
-                          }}
-                        >
-                          {category.count}
-                        </span>
+            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 10, fontSize: 12, color: "#64748b" }}>
+                <span><strong style={{ color: "#0f172a" }}>{list.length}</strong> files</span>
+                <span>·</span>
+                <span><strong style={{ color: "#0f172a" }}>{ready.length}</strong> extracted</span>
+                <span>·</span>
+                <span><strong style={{ color: "#0f172a" }}>{processing.length}</strong> processing</span>
+                <span>·</span>
+                <span><strong style={{ color: "#0f172a" }}>{failed.length}</strong> failed</span>
               </div>
-                    </button>
-                    {isExpanded && (
-                      <div style={{ padding: "0 12px 8px 12px", display: "flex", flexDirection: "column", gap: 6 }}>
-                        {category.files.map((file) => (
-                  <FileItem key={file.id} file={file} getDownloadUrl={getDownloadUrl} onDelete={handleDeleteFile} onRefresh={refreshFiles} />
-                ))}
-                      </div>
-                )}
-              </div>
-                );
-              })}
+
+              {groups.map((g) => (
+                <div key={g.key}>
+                  <div style={{ marginBottom: 8 }}>
+                    <div style={{ fontSize: 13, fontWeight: 800, color: "#0f172a" }}>
+                      {g.label} <span style={{ fontSize: 11, fontWeight: 700, color: "#64748b" }}>({g.items.length})</span>
+                    </div>
+                    <div style={{ fontSize: 12, color: "#64748b" }}>{g.helper}</div>
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {g.items.map((file) => (
+                      <FileItem key={file.id} file={file} getDownloadUrl={getDownloadUrl} onDelete={handleDeleteFile} onRefresh={refreshFiles} />
+                    ))}
+                  </div>
+                </div>
+              ))}
             </div>
           );
         })()}
@@ -3759,9 +3652,8 @@ export default function DealPage() {
           onClick={() => {
             if (!uploading) {
               setShowUploadModal(false);
-              setSelectedFile(null);
-              setDisplayName("");
-              setCategory("other");
+              setSelectedFiles([]);
+              setDragActive(false);
             }
           }}
         >
@@ -3770,128 +3662,132 @@ export default function DealPage() {
               background: "white",
               borderRadius: 10,
               padding: 24,
-              maxWidth: 500,
+              maxWidth: 640,
               width: "90%",
               maxHeight: "90vh",
-              overflow: "visible",
+              overflow: "auto",
             }}
             onClick={(e) => e.stopPropagation()}
           >
-            <h3 style={{ fontSize: 20, fontWeight: 700, marginBottom: 20 }}>Upload File</h3>
+            <h3 style={{ fontSize: 20, fontWeight: 700, marginBottom: 8 }}>Upload deal pack</h3>
+            <p style={{ fontSize: 13, color: "#6b7280", marginTop: 0, marginBottom: 16, lineHeight: 1.45 }}>
+              Upload whatever documents you have for this deal. You can refine document types after upload.
+            </p>
             
             <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-              <div>
-                <label
-                  style={{
-                    display: "block",
-                    fontSize: 14,
-                    fontWeight: 600,
-                    marginBottom: 8,
-                    color: "#374151",
-                  }}
-                >
-                  File (required)
-                </label>
+              {uploading && batchPhase && (
+                <div style={{ border: "1px solid #e5e7eb", borderRadius: 10, padding: 12, background: "#f8fafc" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline", flexWrap: "wrap" }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "#0f172a" }}>
+                      {batchPhase === "uploading" ? "Uploading" : "Processing"} {batchIndex} of {batchTotal}
+                    </div>
+                    <div style={{ fontSize: 12, color: "#64748b" }}>
+                      {batchPhase === "uploading" ? "Uploading files…" : "Running extraction/classification…"}
+                    </div>
+                  </div>
+                  {batchCurrentName && (
+                    <div style={{ marginTop: 4, fontSize: 12, color: "#475569", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {batchCurrentName}
+                    </div>
+                  )}
+                  <div style={{ marginTop: 10, height: 8, background: "#e2e8f0", borderRadius: 9999, overflow: "hidden" }}>
+                    <div
+                      style={{
+                        height: "100%",
+                        width: `${batchTotal > 0 ? Math.round((batchIndex / batchTotal) * 100) : 0}%`,
+                        background: batchPhase === "uploading" ? "#4f46e5" : "#0ea5e9",
+                        transition: "width 200ms ease",
+                      }}
+                    />
+                  </div>
+                </div>
+              )}
+              <div
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  if (!uploading) setDragActive(true);
+                }}
+                onDragLeave={() => setDragActive(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setDragActive(false);
+                  if (uploading) return;
+                  const list = Array.from(e.dataTransfer?.files ?? []);
+                  if (list.length > 0) setSelectedFiles((prev) => [...prev, ...list]);
+                }}
+                style={{
+                  border: `2px dashed ${dragActive ? "#6366f1" : "#cbd5e1"}`,
+                  background: dragActive ? "#eef2ff" : "#f8fafc",
+                  borderRadius: 10,
+                  padding: 16,
+                }}
+              >
                 <input
                   ref={fileInputRef}
                   type="file"
+                  multiple
                   onChange={handleFileSelectInModal}
                   disabled={uploading}
                   style={{ display: "none" }}
                 />
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={uploading}
-                  style={{
-                    padding: "10px 16px",
-                    fontSize: 14,
-                    fontWeight: 600,
-                    borderRadius: 8,
-                    border: "1px solid rgba(0,0,0,0.2)",
-                    background: "white",
-                    cursor: uploading ? "not-allowed" : "pointer",
-                    opacity: uploading ? 0.6 : 1,
-                  }}
-                >
-                  Choose file
-                </button>
-                <p style={{ fontSize: 12, color: "#6b7280", marginTop: 8, marginBottom: 0 }}>
-                  {selectedFile ? `Selected: ${selectedFile.name}` : "No file selected"}
-                </p>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                  <div style={{ fontSize: 13, color: "#334155" }}>
+                    <div style={{ fontWeight: 700, color: "#0f172a" }}>Drag & drop files here</div>
+                    <div style={{ marginTop: 2, color: "#64748b" }}>or choose multiple files to upload.</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={uploading}
+                    style={{
+                      padding: "8px 12px",
+                      fontSize: 13,
+                      fontWeight: 700,
+                      borderRadius: 8,
+                      border: "1px solid rgba(0,0,0,0.2)",
+                      background: "white",
+                      cursor: uploading ? "not-allowed" : "pointer",
+                      opacity: uploading ? 0.6 : 1,
+                    }}
+                  >
+                    Choose files
+                  </button>
+                </div>
+                <div style={{ marginTop: 10, fontSize: 12, color: "#64748b" }}>
+                  Selected: <span style={{ fontWeight: 700, color: "#334155" }}>{selectedFiles.length}</span> file{selectedFiles.length === 1 ? "" : "s"}
+                </div>
               </div>
 
-              <div>
-                <label
-                  style={{
-                    display: "block",
-                    fontSize: 14,
-                    fontWeight: 600,
-                    marginBottom: 8,
-                    color: "#374151",
-                  }}
-                >
-                  Display Name
-                </label>
-                <input
-                  type="text"
-                  value={displayName}
-                  onChange={(e) => setDisplayName(e.target.value)}
-                  placeholder="Enter display name"
-                  style={{
-                    width: "100%",
-                    padding: "10px 12px",
-                    fontSize: 14,
-                    border: "1px solid rgba(0,0,0,0.2)",
-                    borderRadius: 8,
-                    outline: "none",
-                  }}
-                />
-              </div>
-
-              <div>
-                <label
-                  style={{
-                    display: "block",
-                    fontSize: 14,
-                    fontWeight: 600,
-                    marginBottom: 8,
-                    color: "#374151",
-                  }}
-                >
-                  Category (required)
-                </label>
-                <select
-                  value={category}
-                  onChange={(e) => setCategory(e.target.value)}
-                  disabled={uploading}
-                  style={{
-                    width: "100%",
-                    padding: "10px 12px",
-                    fontSize: 14,
-                    border: "1px solid rgba(0,0,0,0.2)",
-                    borderRadius: 8,
-                    outline: "none",
-                    background: "white",
-                  }}
-                >
-                  <option value="financials">Financials</option>
-                  <option value="tax">Tax</option>
-                  <option value="forecasts">Forecasts</option>
-                  <option value="business_plan">Business Plan</option>
-                  <option value="broker_app">Broker Application/SoP</option>
-                  <option value="security">Security</option>
-                  <option value="other">Other</option>
-                </select>
-              </div>
+              {selectedFiles.length > 0 && (
+                <div style={{ border: "1px solid #e5e7eb", borderRadius: 10, overflow: "hidden" }}>
+                  <div style={{ background: "#f9fafb", padding: "8px 12px", fontSize: 12, fontWeight: 700, color: "#334155", display: "flex", justifyContent: "space-between" }}>
+                    <span>Files to upload</span>
+                    <button
+                      type="button"
+                      disabled={uploading}
+                      onClick={() => setSelectedFiles([])}
+                      style={{ fontSize: 12, fontWeight: 700, color: uploading ? "#94a3b8" : "#475569", cursor: uploading ? "not-allowed" : "pointer" }}
+                    >
+                      Clear
+                    </button>
+                  </div>
+                  <div style={{ maxHeight: 180, overflowY: "auto" }}>
+                    {selectedFiles.map((f, idx) => (
+                      <div key={`${f.name}-${idx}`} style={{ padding: "8px 12px", borderTop: idx === 0 ? "none" : "1px solid #e5e7eb", fontSize: 13, color: "#0f172a", display: "flex", justifyContent: "space-between", gap: 12 }}>
+                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</span>
+                        <span style={{ fontSize: 12, color: "#64748b", flexShrink: 0 }}>{Math.round((f.size / 1024 / 1024) * 10) / 10} MB</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", marginTop: 8 }}>
                 <button
                   onClick={() => {
                     setShowUploadModal(false);
-                    setSelectedFile(null);
-                    setDisplayName("");
-                    setCategory("other");
+                    setSelectedFiles([]);
+                    setDragActive(false);
                   }}
                   disabled={uploading}
                   style={{
@@ -3909,20 +3805,20 @@ export default function DealPage() {
                 </button>
                 <button
                   onClick={handleFileUpload}
-                  disabled={uploading || !selectedFile || !category}
+                  disabled={uploading || selectedFiles.length === 0}
                   style={{
                     padding: "10px 20px",
                     fontSize: 14,
                     fontWeight: 600,
                     borderRadius: 8,
                     border: "1px solid rgba(0,0,0,0.2)",
-                    background: uploading || !selectedFile || !category ? "#e5e7eb" : "#10b981",
-                    color: uploading || !selectedFile || !category ? "#9ca3af" : "white",
-                    cursor: uploading || !selectedFile || !category ? "not-allowed" : "pointer",
-                    opacity: uploading || !selectedFile || !category ? 0.6 : 1,
+                    background: uploading || selectedFiles.length === 0 ? "#e5e7eb" : "#10b981",
+                    color: uploading || selectedFiles.length === 0 ? "#9ca3af" : "white",
+                    cursor: uploading || selectedFiles.length === 0 ? "not-allowed" : "pointer",
+                    opacity: uploading || selectedFiles.length === 0 ? 0.6 : 1,
                   }}
                 >
-                  {uploading ? "Uploading..." : "Upload"}
+                  {uploading ? "Uploading..." : `Upload ${selectedFiles.length} file${selectedFiles.length === 1 ? "" : "s"}`}
                 </button>
               </div>
             </div>

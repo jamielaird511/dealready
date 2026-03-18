@@ -637,6 +637,9 @@ export default function SubmissionPage() {
       const res = await fetch(`/api/submissions/${submissionId}/run`, { method: "POST", credentials: "include" });
       const json = await res.json().catch(() => ({}));
       if (res.ok && json?.ok) {
+        if (json?.runId) {
+          void fetch(`/api/dealsense/runs/${json.runId}/execute`, { method: "POST", keepalive: true }).catch(() => {});
+        }
         await loadLatestRun();
       } else {
         setRunNowError(json?.error ?? "Failed to run assessment");
