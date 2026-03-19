@@ -87,6 +87,31 @@ export function renderDealSummary(
     .sort((a, b) => b.confidence - a.confidence)
     .slice(0, 6)
     .map((u) => u.bullet);
+  const structuredClarifications = Array.isArray((data as any)?.key_clarifications_required)
+    ? ((data as any).key_clarifications_required as Array<{
+        category?: string;
+        action?: string;
+        question?: string;
+        reason?: string;
+      }>)
+    : [];
+  const keyRisks = Array.isArray((data as any)?.key_risks)
+    ? ((data as any).key_risks as string[]).filter((x) => typeof x === "string" && x.trim()).slice(0, 6)
+    : [];
+  const structuringConsiderations = Array.isArray((data as any)?.structuring_considerations)
+    ? ((data as any).structuring_considerations as string[]).filter((x) => typeof x === "string" && x.trim()).slice(0, 6)
+    : [];
+  const strengthsLayer = Array.isArray((data as any)?.strengths)
+    ? ((data as any).strengths as string[]).filter((x) => typeof x === "string" && x.trim()).slice(0, 6)
+    : [];
+  const hasHistoricalFinancials =
+    typeof (data as any)?.has_historical_financials === "boolean"
+      ? Boolean((data as any).has_historical_financials)
+      : true;
+  const forecastRelianceFlag =
+    typeof (data as any)?.forecast_reliance === "boolean"
+      ? Boolean((data as any).forecast_reliance)
+      : false;
 
   const lines: string[] = [];
   lines.push(readinessLine);
@@ -128,16 +153,55 @@ export function renderDealSummary(
   if (tsSentence3) lines.push(tsSentence3);
   lines.push("");
   lines.push("Repayment Overview");
-  lines.push(`- Repayment source: ${repayment}`);
+  if (!hasHistoricalFinancials && forecastRelianceFlag) {
+    lines.push(
+      "- Repayment supported by forecast earnings and future contracts (subject to confirmation; historical performance not provided)."
+    );
+  } else {
+    lines.push(`- Repayment source: ${repayment}`);
+  }
   lines.push("");
   lines.push("Financial Snapshot");
   lines.push(`- Forecast revenue: ${revenue}`);
   lines.push(`- Forecast EBITDA: ${ebitda}`);
   lines.push(`- Forecast DSCR: ${dscr}`);
   if (forecastNotes) lines.push(`- Notes: ${forecastNotes}`);
+  if (keyRisks.length > 0) {
+    lines.push("");
+    lines.push("Key risks");
+    for (const r of keyRisks) lines.push(`- ${r}`);
+  }
+  if (structuringConsiderations.length > 0) {
+    lines.push("");
+    lines.push("Structuring considerations");
+    for (const s of structuringConsiderations) lines.push(`- ${s}`);
+  }
+  if (strengthsLayer.length > 0) {
+    lines.push("");
+    lines.push("Strengths");
+    for (const s of strengthsLayer) lines.push(`- ${s}`);
+  }
   lines.push("");
-  lines.push("Key Clarifications");
-  if (unknowns.length > 0) {
+  lines.push("Key clarifications required before submission");
+  if (structuredClarifications.length > 0) {
+    const grouped = new Map<string, Array<{ action: string; reason: string }>>();
+    for (const c of structuredClarifications) {
+      const category = (c.category || "General").trim() || "General";
+      const action = (c.action || c.question || "").trim();
+      if (!action) continue;
+      const reason = (c.reason || "").trim();
+      if (!grouped.has(category)) grouped.set(category, []);
+      const list = grouped.get(category)!;
+      if (!list.some((x) => x.action === action)) list.push({ action, reason });
+    }
+    for (const [category, items] of grouped.entries()) {
+      lines.push("");
+      lines.push(`${category}`);
+      for (const item of items) {
+        lines.push(`- ${item.action}`);
+      }
+    }
+  } else if (unknowns.length > 0) {
     for (const u of unknowns) lines.push(`- ${u}`);
   } else {
     lines.push("- No specific clarifications extracted with high confidence from the available text.");

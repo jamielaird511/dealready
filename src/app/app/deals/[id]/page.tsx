@@ -805,10 +805,23 @@ export default function DealPage() {
     if (security === "Not yet identified") missing.push("Security not yet identified");
     if (repaymentSource === "Not yet identified") missing.push("Repayment source not yet identified");
 
-    const unknowns = (Array.isArray(data?.key_unknowns) ? data.key_unknowns : [])
+    const structuredClarifications = (Array.isArray((data as any)?.key_clarifications_required)
+      ? (data as any).key_clarifications_required
+      : [])
+      .map((c: any) => {
+        const category = typeof c?.category === "string" ? c.category.trim() : "General";
+        const action = typeof c?.action === "string" ? c.action.trim() : "";
+        return action ? `${category}: ${action}` : "";
+      })
+      .filter(Boolean)
+      .filter((v: string, i: number, arr: string[]) => arr.indexOf(v) === i)
+      .slice(0, 6);
+    const fallbackUnknowns = (Array.isArray(data?.key_unknowns) ? data.key_unknowns : [])
       .map((u: any) => (typeof u?.bullet === "string" ? u.bullet.trim() : ""))
       .filter(Boolean)
       .slice(0, 6);
+    const unknowns = structuredClarifications.length > 0 ? structuredClarifications : fallbackUnknowns;
+    const hasStructuredClarifications = structuredClarifications.length > 0;
 
     return {
       borrower,
@@ -820,6 +833,7 @@ export default function DealPage() {
       repaymentSource,
       unknowns,
       missing,
+      hasStructuredClarifications,
     };
   })();
 
@@ -2983,28 +2997,30 @@ export default function DealPage() {
         </div>
 
         {/* Unknowns */}
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 lg:col-span-3">
-          <h2 className="text-base font-semibold text-slate-900 mb-2">Unknowns / information still needed</h2>
-          {analysisComplete && dealSnapshotSummary ? (
-            dealSnapshotSummary.unknowns.length > 0 ? (
-              <ul className="list-disc pl-5 text-sm text-slate-700 space-y-1">
-                {dealSnapshotSummary.unknowns.slice(0, 5).map((u: string, idx: number) => (
-                  <li key={idx}>{u}</li>
-                ))}
-              </ul>
-            ) : dealSnapshotSummary.missing.length > 0 ? (
-              <ul className="list-disc pl-5 text-sm text-slate-700 space-y-1">
-                {dealSnapshotSummary.missing.slice(0, 5).map((m: string, idx: number) => (
-                  <li key={idx}>{m}</li>
-                ))}
-              </ul>
+        {!(analysisComplete && dealSnapshotSummary?.hasStructuredClarifications) && (
+          <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 lg:col-span-3">
+            <h2 className="text-base font-semibold text-slate-900 mb-2">Unknowns / information still needed</h2>
+            {analysisComplete && dealSnapshotSummary ? (
+              dealSnapshotSummary.unknowns.length > 0 ? (
+                <ul className="list-disc pl-5 text-sm text-slate-700 space-y-1">
+                  {dealSnapshotSummary.unknowns.slice(0, 5).map((u: string, idx: number) => (
+                    <li key={idx}>{u}</li>
+                  ))}
+                </ul>
+              ) : dealSnapshotSummary.missing.length > 0 ? (
+                <ul className="list-disc pl-5 text-sm text-slate-700 space-y-1">
+                  {dealSnapshotSummary.missing.slice(0, 5).map((m: string, idx: number) => (
+                    <li key={idx}>{m}</li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-sm text-slate-600">No major unknowns detected from the current pack.</p>
+              )
             ) : (
-              <p className="text-sm text-slate-600">No major unknowns detected from the current pack.</p>
-            )
-          ) : (
-            <p className="text-sm text-slate-600">{unknownsPlaceholder}</p>
-          )}
-        </div>
+              <p className="text-sm text-slate-600">{unknownsPlaceholder}</p>
+            )}
+          </div>
+        )}
       </div>
         );
       })()}
