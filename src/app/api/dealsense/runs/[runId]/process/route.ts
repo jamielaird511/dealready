@@ -179,39 +179,43 @@ function buildBusinessPurchaseClarifications(params: {
 
   return BUSINESS_PURCHASE_QUESTIONS
     .filter((q) => (q.id === "owner_involvement_management" ? true : !checks[q.id]))
-    .map((q) => ({
-      id: q.id,
-      category: q.category,
-      question: q.question,
-      action:
-        q.id === "purchase_structure"
-          ? "Confirm whether the transaction is an asset or share purchase."
-          : q.id === "purchase_price_breakdown"
-          ? "Provide a purchase price breakdown across goodwill, plant & equipment, and stock."
-          : q.id === "equity_contribution"
-          ? "Confirm equity contribution amount and source of funds."
-          : q.id === "vendor_finance"
-          ? "Confirm whether vendor finance is included and provide amount, ranking, and repayment terms."
-          : q.id === "historical_financials"
-          ? "Provide the last 2-3 years of financial statements."
-          : q.id === "normalised_ebitda"
-          ? "Provide normalized EBITDA and clearly document all adjustments."
-          : q.id === "debt_servicing_capacity"
-          ? "Provide expected debt servicing position, including DSCR."
-          : q.id === "owner_involvement_management"
-          ? ownerRoleMentioned
-            ? "Confirm post-settlement remuneration and final management structure."
-            : "Confirm post-settlement ownership, management structure, and remuneration."
-          : q.id === "tax_and_liabilities"
-          ? "Confirm tax position, creditor status, and any contingent liabilities."
-          : q.id === "customer_concentration"
-          ? "Confirm customer/revenue concentration and exposure to key counterparties."
-          : q.id === "security_position"
-          ? "Confirm full security package including business assets, property, and guarantees."
-          : q.question,
-      reason: q.reason,
-      confidence: 0.9,
-    }));
+    .map((q) => {
+      let actionText: string = q.question;
+      if (q.id === "purchase_structure") {
+        actionText = "Confirm whether the transaction is an asset or share purchase.";
+      } else if (q.id === "purchase_price_breakdown") {
+        actionText = "Provide a purchase price breakdown across goodwill, plant & equipment, and stock.";
+      } else if (q.id === "equity_contribution") {
+        actionText = "Confirm equity contribution amount and source of funds.";
+      } else if (q.id === "vendor_finance") {
+        actionText = "Confirm whether vendor finance is included and provide amount, ranking, and repayment terms.";
+      } else if (q.id === "historical_financials") {
+        actionText = "Provide the last 2-3 years of financial statements.";
+      } else if (q.id === "normalised_ebitda") {
+        actionText = "Provide normalized EBITDA and clearly document all adjustments.";
+      } else if (q.id === "debt_servicing_capacity") {
+        actionText = "Provide expected debt servicing position, including DSCR.";
+      } else if (q.id === "owner_involvement_management") {
+        actionText = ownerRoleMentioned
+          ? "Confirm post-settlement remuneration and final management structure."
+          : "Confirm post-settlement ownership, management structure, and remuneration.";
+      } else if (q.id === "tax_and_liabilities") {
+        actionText = "Confirm tax position, creditor status, and any contingent liabilities.";
+      } else if (q.id === "customer_concentration") {
+        actionText = "Confirm customer/revenue concentration and exposure to key counterparties.";
+      } else if (q.id === "security_position") {
+        actionText = "Confirm full security package including business assets, property, and guarantees.";
+      }
+
+      return {
+        id: q.id,
+        category: q.category,
+        question: q.question,
+        action: actionText,
+        reason: q.reason,
+        confidence: 0.9,
+      };
+    });
 }
 
 function buildCreditFindingsLayer(params: {
