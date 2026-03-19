@@ -685,6 +685,8 @@ export default function DealPage() {
   const renameInputRef = useRef<HTMLInputElement>(null);
   const [mounted, setMounted] = useState(false);
   const uploadAutoOpenedRef = useRef(false);
+  const [autoUploadFlowActive, setAutoUploadFlowActive] = useState(false);
+  const [newDealProcessingGate, setNewDealProcessingGate] = useState(false);
 
   // Upload Pack category accordion state
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
@@ -718,6 +720,7 @@ export default function DealPage() {
     if (!shouldOpenUpload) return;
     if (uploadAutoOpenedRef.current) return;
     uploadAutoOpenedRef.current = true;
+    setAutoUploadFlowActive(true);
     setActiveTab("overview");
     setShowUploadModal(true);
     const nextParams = new URLSearchParams(searchParams.toString());
@@ -725,6 +728,26 @@ export default function DealPage() {
     const qs = nextParams.toString();
     router.replace(`/app/deals/${dealId}${qs ? `?${qs}` : ""}`);
   }, [searchParams, router, dealId]);
+
+  // While gated, keep polling latest run until completion/failure.
+  useEffect(() => {
+    if (!newDealProcessingGate || !activeSubmissionId) return;
+    const status = latestRun?.status;
+    if (status === "completed" || status === "failed") return;
+    const timer = window.setInterval(() => {
+      void refreshLatestRun();
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [newDealProcessingGate, activeSubmissionId, latestRun?.status]);
+
+  // Auto-release gate once analysis completes; keep gate on failure for fallback actions.
+  useEffect(() => {
+    if (!newDealProcessingGate) return;
+    if (latestRun?.status === "completed") {
+      setNewDealProcessingGate(false);
+      setAutoUploadFlowActive(false);
+    }
+  }, [newDealProcessingGate, latestRun?.status]);
 
   // DealSense deal briefing derived from latest run (if any)
   const dealSnapshotSummary = (() => {
@@ -1618,6 +1641,13 @@ export default function DealPage() {
         nameById[insertedFile.id] = file.name;
       }
 
+      if (autoUploadFlowActive && insertedIds.length > 0) {
+        setActiveTab("overview");
+        setNewDealProcessingGate(true);
+      } else if (autoUploadFlowActive && insertedIds.length === 0) {
+        setAutoUploadFlowActive(false);
+      }
+
       // Close modal once uploads finish; analysis runs from workspace state.
       setShowUploadModal(false);
       setSelectedFiles([]);
@@ -2076,20 +2106,6 @@ export default function DealPage() {
             </span>
           )}
         </div>
-        {(workspacePhase || runAssessmentLoading) && (
-          <div className="mt-3 rounded-lg border border-indigo-100 bg-indigo-50 px-4 py-3 text-sm text-indigo-900">
-            <div className="font-semibold">
-              {workspacePhase === "processing_docs"
-                ? "Analyzing deal pack… extracting document text"
-                : "Running DealSense credit checks…"}
-            </div>
-            {batchCurrentName && (
-              <div className="mt-1 text-xs text-indigo-800" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {batchCurrentName}
-              </div>
-            )}
-          </div>
-        )}
       </div>
 
       {fromWizard && (
@@ -2142,6 +2158,7 @@ export default function DealPage() {
       )}
 
       {/* Tab bar */}
+      {!newDealProcessingGate && (
       <div style={{ display: "flex", gap: 24, borderBottom: "2px solid #e5e7eb", flexWrap: "wrap" }}>
         {(["overview", "parties", "documents", "checks", "lender"] as const).map((tab) => (
           <button
@@ -2164,6 +2181,137 @@ export default function DealPage() {
           </button>
         ))}
       </div>
+      )}
+
+      {(newDealProcessingGate || workspacePhase || runAssessmentLoading) && (
+        <div className="fixed inset-0 z-[60] bg-slate-900/20 backdrop-blur-[2px] flex items-center justify-center p-4 processing-overlay-enter">
+          {(() => {
+            const status = latestRun?.status;
+            const isFailed = status === "failed" || !!runCheckError || !!latestRunError;
+            const isProcessingDocs = uploading || workspacePhase === "processing_docs";
+            const isRunning = workspacePhase === "running_dealsense" || runAssessmentLoading || status === "running" || status === "queued";
+
+            const steps = [
+              {
+                label: "Files uploaded",
+                state: files.length > 0 ? "completed" : uploading ? "active" : "pending",
+              },
+              {
+                label: "Extracting and classifying documents",
+                state: isProcessingDocs
+                  ? "active"
+                  : (workspacePhase === "running_dealsense" || status === "running" || status === "queued" || status === "completed" || status === "failed")
+                  ? "completed"
+                  : "pending",
+              },
+              {
+                label: "Running DealSense analysis",
+                state: isFailed ? "failed" : status === "completed" ? "completed" : isRunning ? "active" : "pending",
+              },
+            ] as const;
+
+            return (
+              <div className="w-full max-w-xl rounded-2xl border border-slate-200 bg-white shadow-xl p-6 processing-card-enter">
+                <h2 className="text-xl font-semibold text-slate-900">Preparing your deal workspace</h2>
+                <p className="mt-2 text-sm text-slate-600">
+                  We are extracting document content and running DealSense analysis so your dashboard can load with deal summary, narrative, and unknowns.
+                </p>
+                <div className="mt-4 h-1.5 rounded-full bg-slate-100 overflow-hidden indeterminate-track">
+                  <div className="h-full w-1/3 rounded-full bg-indigo-500 indeterminate-bar" />
+                </div>
+                <ul className="mt-5 space-y-2">
+                  {steps.map((step) => (
+                    <li
+                      key={step.label}
+                      className={`flex items-center justify-between rounded-lg border px-3 py-2 text-sm transition-all duration-300 ${
+                        step.state === "active"
+                          ? "border-indigo-200 bg-indigo-50/50"
+                          : step.state === "completed"
+                          ? "border-emerald-200 bg-emerald-50/40"
+                          : step.state === "failed"
+                          ? "border-rose-200 bg-rose-50/40"
+                          : "border-slate-200 bg-white"
+                      }`}
+                    >
+                      <span className="text-slate-800 flex items-center gap-2">
+                        {step.state === "active" && <span className="h-2 w-2 rounded-full bg-indigo-500 active-step-dot" />}
+                        {step.label}
+                      </span>
+                      <span
+                        className={`text-xs font-semibold px-2 py-1 rounded-full ${
+                          step.state === "completed"
+                            ? "bg-emerald-100 text-emerald-700"
+                            : step.state === "active"
+                            ? "bg-indigo-100 text-indigo-700 in-progress-badge"
+                            : step.state === "failed"
+                            ? "bg-rose-100 text-rose-700"
+                            : "bg-slate-100 text-slate-600"
+                        }`}
+                      >
+                        {step.state === "completed" ? "Completed" : step.state === "active" ? "In progress" : step.state === "failed" ? "Failed" : "Pending"}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+                {batchCurrentName && (
+                  <p className="mt-3 text-xs text-slate-500" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    Current file: {batchCurrentName}
+                  </p>
+                )}
+                {isFailed && newDealProcessingGate && (
+                  <div className="mt-4 flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        if (!activeSubmissionId || runAssessmentLoading) return;
+                        await triggerDealSenseRun(activeSubmissionId);
+                      }}
+                      disabled={!activeSubmissionId || runAssessmentLoading}
+                      className="px-3 py-1.5 text-sm font-semibold rounded-md border border-indigo-600 bg-indigo-600 text-white disabled:opacity-60 disabled:cursor-not-allowed"
+                    >
+                      {runAssessmentLoading ? "Retrying…" : "Retry analysis"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setNewDealProcessingGate(false);
+                        setAutoUploadFlowActive(false);
+                      }}
+                      className="px-3 py-1.5 text-sm font-semibold rounded-md border border-slate-300 bg-white text-slate-700"
+                    >
+                      Open dashboard anyway
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+        </div>
+      )}
+      <style jsx global>{`
+        @keyframes processingOverlayFadeIn {
+          from { opacity: 0; }
+          to { opacity: 1; }
+        }
+        @keyframes processingCardIn {
+          from { opacity: 0; transform: translateY(6px) scale(0.99); }
+          to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        @keyframes indeterminateSlide {
+          0% { transform: translateX(-120%); }
+          100% { transform: translateX(320%); }
+        }
+        @keyframes subtlePulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.62; }
+        }
+        .processing-overlay-enter { animation: processingOverlayFadeIn 220ms ease-out; }
+        .processing-card-enter { animation: processingCardIn 260ms ease-out; }
+        .indeterminate-track { position: relative; }
+        .indeterminate-bar { animation: indeterminateSlide 1.6s ease-in-out infinite; will-change: transform; }
+        .active-step-dot { animation: subtlePulse 1.4s ease-in-out infinite; }
+        .in-progress-badge { animation: subtlePulse 1.8s ease-in-out infinite; }
+      `}</style>
 
       {/* DealSense Confirmation Modal */}
       {showDealSenseModal && (
@@ -2740,7 +2888,7 @@ export default function DealPage() {
       )}
 
       {/* Tab content: Overview */}
-      {activeTab === "overview" && (
+      {!newDealProcessingGate && activeTab === "overview" && (
         <>
       {(() => {
         const hasDocs = files.length > 0;
@@ -2939,7 +3087,7 @@ export default function DealPage() {
       )}
 
       {/* Tab content: Parties */}
-      {activeTab === "parties" && (
+      {!newDealProcessingGate && activeTab === "parties" && (
         <>
           {/* Customers Section */}
           <div style={{ marginBottom: 32 }}>
@@ -3106,7 +3254,7 @@ export default function DealPage() {
       )}
 
       {/* Tab content: Documents */}
-      {activeTab === "documents" && (
+      {!newDealProcessingGate && activeTab === "documents" && (
       <>
       {/* Purpose checklist */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5" style={{ marginBottom: 24 }}>
@@ -3388,7 +3536,7 @@ export default function DealPage() {
       )}
 
       {/* Tab content: Checks */}
-      {activeTab === "checks" && (
+      {!newDealProcessingGate && activeTab === "checks" && (
       <>
       {/* Assessment Section */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5" style={{ marginTop: 24 }}>
@@ -3537,7 +3685,7 @@ export default function DealPage() {
       )}
 
       {/* Tab content: Recommendations */}
-      {activeTab === "lender" && (
+      {!newDealProcessingGate && activeTab === "lender" && (
       <>
       {/* Lender Summary */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5" style={{ marginTop: 24 }}>
@@ -3654,6 +3802,7 @@ export default function DealPage() {
               setShowUploadModal(false);
               setSelectedFiles([]);
               setDragActive(false);
+              if (autoUploadFlowActive) setAutoUploadFlowActive(false);
             }
           }}
         >
@@ -3788,6 +3937,7 @@ export default function DealPage() {
                     setShowUploadModal(false);
                     setSelectedFiles([]);
                     setDragActive(false);
+                    if (autoUploadFlowActive) setAutoUploadFlowActive(false);
                   }}
                   disabled={uploading}
                   style={{
