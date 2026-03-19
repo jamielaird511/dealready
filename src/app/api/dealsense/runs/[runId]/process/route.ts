@@ -374,10 +374,14 @@ function buildCreditFindingsLayer(params: {
     text.includes("owner salary") ||
     text.includes("remuneration");
   const explicitCashflowExclusion = explicitCashflowExclusionFromDocs || explicitCashflowExclusionCombined;
+  let cashflowForecastCombinedTriggered = false;
 
   if (explicitCashflowExclusion || (hasCashflowSignal && (!hasRepaymentSignal || !hasDrawingsSignal))) {
+    cashflowForecastCombinedTriggered = explicitCashflowExclusion;
     risks.push(
-      "Cashflow forecast excludes debt servicing and/or owner drawings, limiting reliability of serviceability assessment."
+      cashflowForecastCombinedTriggered
+        ? "Forecast cashflow excludes debt servicing and is not suitable for assessing serviceability."
+        : "Cashflow forecast excludes debt servicing and/or owner drawings, limiting reliability of serviceability assessment."
     );
   }
 
@@ -404,6 +408,12 @@ function buildCreditFindingsLayer(params: {
   if (historicalFinancialsDetectedFromDocs) historicalSignalsMatched.push("doc:historical_financials");
   const hasHistoricalAnswer = isAnsweredText(answerById.get("historical_financials")?.answer);
   const historicalFinancialsDetected = hasHistoricalAnswer || historicalFinancialsDetectedFromDocs;
+  const combinedRiskTriggered = forecastRelianceSignal && !historicalFinancialsDetected;
+  if (combinedRiskTriggered) {
+    risks.push(
+      "Serviceability relies on forecast earnings without supporting historical financials, limiting reliability of assessment."
+    );
+  }
   if (
     forecastRelianceSignal &&
     !historicalFinancialsDetected &&
@@ -444,10 +454,110 @@ function buildCreditFindingsLayer(params: {
     );
   }
 
+  // Serviceability evidence sufficiency (readiness-focused; not an approval/decline judgement)
+  const hasEarningsBasis =
+    historicalFinancialsDetected ||
+    forecastRelianceSignal ||
+    text.includes("earnings") ||
+    text.includes("net profit") ||
+    text.includes("npat") ||
+    text.includes("cash surplus");
+  const hasDebtObligations =
+    text.includes("debt") ||
+    text.includes("lending amount") ||
+    text.includes("loan amount") ||
+    text.includes("facility limit") ||
+    text.includes("bank funding");
+  const hasInterestOrRepaymentAssumptions =
+    text.includes("interest") ||
+    text.includes("repayment") ||
+    text.includes("debt service") ||
+    text.includes("debt servicing") ||
+    text.includes("dscr");
+  const hasAddbacksOrAdjustments =
+    text.includes("add-back") ||
+    text.includes("add back") ||
+    text.includes("normalised ebitda") ||
+    text.includes("normalized ebitda") ||
+    text.includes("adjustment");
+  const hasOwnerDrawingsOrRemuneration =
+    isAnsweredText(ownerRemAnswer?.answer) ||
+    text.includes("owner remuneration") ||
+    text.includes("drawings") ||
+    text.includes("owner salary") ||
+    text.includes("paye") ||
+    text.includes("external income support");
+  const hasForecastOnlySignals =
+    text.includes("forecast") ||
+    text.includes("projected") ||
+    text.includes("projection") ||
+    text.includes("cashflow forecast") ||
+    text.includes("cash flow forecast");
+  const hasExplanatoryCommentary =
+    text.includes("new contract") ||
+    text.includes("confirmed contract") ||
+    text.includes("future revenue secured") ||
+    text.includes("forward contract") ||
+    text.includes("transition") ||
+    text.includes("ramp-up") ||
+    text.includes("ramp up") ||
+    text.includes("seasonality") ||
+    text.includes("refinance") ||
+    text.includes("restructure") ||
+    text.includes("temporary shortfall") ||
+    text.includes("expected improvement") ||
+    text.includes("one-off") ||
+    text.includes("one off") ||
+    text.includes("despite current weakness") ||
+    text.includes("acceptable despite") ||
+    text.includes("paye") ||
+    text.includes("owner income support") ||
+    text.includes("drawings support");
+  const hasServicingCommentary =
+    hasExplanatoryCommentary || (!hasForecastOnlySignals && (text.includes("commentary") || text.includes("assumption")));
+  const hasSupportingContext =
+    text.includes("future contract") ||
+    text.includes("forward contract") ||
+    text.includes("refinance") ||
+    text.includes("transition") ||
+    text.includes("expected improvement") ||
+    text.includes("uplift") ||
+    text.includes("ramp-up") ||
+    text.includes("ramp up");
+
+  const servicingSignalCount = [
+    hasEarningsBasis,
+    hasDebtObligations,
+    hasInterestOrRepaymentAssumptions || hasServicingCommentary,
+    hasOwnerDrawingsOrRemuneration,
+    hasSupportingContext || hasAddbacksOrAdjustments,
+  ].filter(Boolean).length;
+
+  const hasMajorServicingExclusionFlaw = explicitCashflowExclusion;
+  const forecastOnlyWithoutContext = hasForecastOnlySignals && !hasServicingCommentary && !hasSupportingContext;
+  if (!hasMajorServicingExclusionFlaw && servicingSignalCount >= 4 && hasServicingCommentary && !forecastOnlyWithoutContext) {
+    strengths.push(
+      "Serviceability is broadly evidenced, although lenders may apply their own servicing methodology."
+    );
+  } else if (servicingSignalCount >= 3 || (hasEarningsBasis && hasDebtObligations)) {
+    structuring.push(
+      "Serviceability is partly evidenced, but key assumptions or supporting detail should be clarified."
+    );
+  } else {
+    risks.push(
+      "Serviceability is not clearly evidenced, as key inputs or assumptions are not provided."
+    );
+  }
+
   console.log("[DealSense CreditLayer] docClassifications:", docClassifications);
   console.log("[DealSense CreditLayer] cashflowPhrasesMatched:", cashflowPhrasesMatched);
   console.log("[DealSense CreditLayer] cashflowDocNormalizedPreview:", cashflowDocNormalizedPreview);
   console.log("[DealSense CreditLayer] historicalSignalsMatched:", historicalSignalsMatched);
+  console.log("[DealSense CreditLayer] reasoningFlags:", {
+    forecastReliance: forecastRelianceSignal,
+    historicalFinancialsDetected,
+    combinedRiskTriggered,
+  });
   console.log("[DealSense CreditLayer] key_risks:", risks);
 
   return {
