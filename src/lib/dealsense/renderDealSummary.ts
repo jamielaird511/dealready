@@ -27,6 +27,23 @@ function numberValue(value: number | null, confidence: number) {
   return `${formatted} (requires confirmation)`;
 }
 
+/** Tone down modelled language in notes when the pack lacks formal financials or uses narrative-only sources. */
+function softenThinPackFinancialNote(note: string, narrativeClaimSourcesOnly: boolean): string {
+  let s = note;
+  s = s.replace(
+    /\bhistorical profitability and future contracts support repayment capability\b/gi,
+    "the pack references historical profitability and future contracts, which require confirmation"
+  );
+  s = s.replace(/\bstrong historical profitability\b/gi, "Historical profitability as described in the pack");
+  s = s.replace(/\bsupports repayment capability\b/gi, "would need to be confirmed in the context of repayment capacity");
+  s = s.replace(/\bsupports repayment\b/gi, "would need to be confirmed in the context of repayment");
+  if (narrativeClaimSourcesOnly) {
+    s = s.replace(/\bfuture contracts support\b/gi, "future contracts are referenced; confirmation is required as to");
+    s = s.replace(/\bhistorical profitability supports\b/gi, "historical profitability is referenced; confirmation is required as to");
+  }
+  return s;
+}
+
 export function renderDealSummary(
   data: DealSenseSummaryData,
   context: { ready_to_submit: boolean; has_open_critical: boolean }
@@ -70,6 +87,23 @@ export function renderDealSummary(
 
   const repayment = textValue(data.repayment_source.value, data.repayment_source.confidence);
 
+  const hasHistoricalFinancials =
+    typeof (data as any)?.has_historical_financials === "boolean"
+      ? Boolean((data as any).has_historical_financials)
+      : true;
+  const forecastRelianceFlag =
+    typeof (data as any)?.forecast_reliance === "boolean"
+      ? Boolean((data as any).forecast_reliance)
+      : false;
+  const hasProperFinancialDocuments =
+    typeof (data as any)?.has_proper_financial_documents === "boolean"
+      ? Boolean((data as any).has_proper_financial_documents)
+      : true;
+  const narrativeClaimSourcesOnly =
+    typeof (data as any)?.narrative_claim_sources_only === "boolean"
+      ? Boolean((data as any).narrative_claim_sources_only)
+      : false;
+
   const revenue = numberValue(data.forecast_figures.revenue.value, data.forecast_figures.revenue.confidence);
   const ebitda = numberValue(data.forecast_figures.ebitda.value, data.forecast_figures.ebitda.confidence);
   const dscr = data.forecast_figures.dscr.value == null
@@ -78,9 +112,13 @@ export function renderDealSummary(
       ? `${data.forecast_figures.dscr.value.toFixed(2)}`
       : `${data.forecast_figures.dscr.value.toFixed(2)} (subject to confirmation)`;
 
-  const forecastNotes = data.forecast_figures.notes.value
+  const forecastNotesRaw = data.forecast_figures.notes.value
     ? textValue(data.forecast_figures.notes.value, data.forecast_figures.notes.confidence)
     : null;
+  const forecastNotes =
+    forecastNotesRaw && !hasProperFinancialDocuments
+      ? softenThinPackFinancialNote(forecastNotesRaw, narrativeClaimSourcesOnly)
+      : forecastNotesRaw;
 
   const unknowns = (data.key_unknowns || [])
     .filter((u) => u.bullet && u.bullet.trim())
@@ -104,14 +142,6 @@ export function renderDealSummary(
   const strengthsLayer = Array.isArray((data as any)?.strengths)
     ? ((data as any).strengths as string[]).filter((x) => typeof x === "string" && x.trim()).slice(0, 6)
     : [];
-  const hasHistoricalFinancials =
-    typeof (data as any)?.has_historical_financials === "boolean"
-      ? Boolean((data as any).has_historical_financials)
-      : true;
-  const forecastRelianceFlag =
-    typeof (data as any)?.forecast_reliance === "boolean"
-      ? Boolean((data as any).forecast_reliance)
-      : false;
 
   const lines: string[] = [];
   lines.push(readinessLine);
@@ -154,14 +184,37 @@ export function renderDealSummary(
   lines.push("");
   lines.push("Repayment Overview");
   if (!hasHistoricalFinancials && forecastRelianceFlag) {
+    if (hasProperFinancialDocuments) {
+      lines.push(
+        "- Repayment supported by forecast earnings and future contracts (subject to confirmation; historical performance not provided)."
+      );
+    } else if (narrativeClaimSourcesOnly) {
+      lines.push(
+        "- The pack references forecast earnings and future contracts; these require confirmation before they can be relied upon for servicing (historical performance not provided)."
+      );
+    } else {
+      lines.push(
+        "- Repayment is indicated as relying on forecast earnings and future contracts (subject to confirmation; historical performance not provided)."
+      );
+    }
+  } else if (!hasProperFinancialDocuments && repayment !== "Not clearly documented") {
     lines.push(
-      "- Repayment supported by forecast earnings and future contracts (subject to confirmation; historical performance not provided)."
+      narrativeClaimSourcesOnly
+        ? "- The pack references the following repayment description (unverified narrative; confirmation required): " + repayment
+        : "- Repayment source indicated in the pack as follows (subject to confirmation against financial statements): " + repayment
     );
   } else {
     lines.push(`- Repayment source: ${repayment}`);
   }
   lines.push("");
   lines.push("Financial Snapshot");
+  if (!hasProperFinancialDocuments) {
+    lines.push(
+      narrativeClaimSourcesOnly
+        ? "- Historical profitability, future contracts, and similar points appear only as narrative claims in the pack (e.g. plans or applications); they require confirmation and are not evidenced as validated financial facts."
+        : "- Forecast and narrative figures below are extracted from the pack; confirm against historical financial statements or management accounts before relying on servicing conclusions."
+    );
+  }
   lines.push(`- Forecast revenue: ${revenue}`);
   lines.push(`- Forecast EBITDA: ${ebitda}`);
   lines.push(`- Forecast DSCR: ${dscr}`);
@@ -180,6 +233,11 @@ export function renderDealSummary(
     lines.push("");
     lines.push("Strengths");
     for (const s of strengthsLayer) lines.push(`- ${s}`);
+    if (narrativeClaimSourcesOnly) {
+      lines.push(
+        "- Supporting statements above reflect pack narrative only; confirm against financial statements, tax records, or contracts before treating them as evidenced."
+      );
+    }
   }
   lines.push("");
   lines.push("Key clarifications required before submission");

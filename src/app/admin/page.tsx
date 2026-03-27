@@ -19,7 +19,7 @@ export default function AdminPage() {
           >
             <div className="flex items-center gap-3 mb-3">
               <svg
-                className="h-5 w-5 shrink-0 text-blue-600"
+                className="h-5 w-5 shrink-0 text-blue-500/70"
                 fill="none"
                 stroke="currentColor"
                 viewBox="0 0 24 24"
@@ -48,7 +48,7 @@ export default function AdminPage() {
           >
             <div className="flex items-center gap-3 mb-3">
               <svg
-                className="h-5 w-5 shrink-0 text-blue-600"
+                className="h-5 w-5 shrink-0 text-blue-500/70"
                 fill="none"
                 stroke="currentColor"
                 viewBox="0 0 24 24"
@@ -77,7 +77,7 @@ export default function AdminPage() {
           >
             <div className="flex items-center gap-3 mb-3">
               <svg
-                className="h-5 w-5 shrink-0 text-blue-600"
+                className="h-5 w-5 shrink-0 text-blue-500/70"
                 fill="none"
                 stroke="currentColor"
                 viewBox="0 0 24 24"
@@ -106,7 +106,7 @@ export default function AdminPage() {
           >
             <div className="flex items-center gap-3 mb-3">
               <svg
-                className="h-5 w-5 shrink-0 text-blue-600"
+                className="h-5 w-5 shrink-0 text-blue-500/70"
                 fill="none"
                 stroke="currentColor"
                 viewBox="0 0 24 24"

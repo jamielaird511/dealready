@@ -135,10 +135,10 @@ export default function Home() {
           </div>
           <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
             {/* Step 1 */}
-            <div className="rounded-none border-2 border-blue-300 bg-white p-6 transition-transform transition-shadow duration-200 hover:-translate-y-0.5 hover:shadow-md">
+            <div className="rounded-none border-2 border-blue-200 bg-white p-6 transition-transform transition-shadow duration-200 hover:-translate-y-0.5 hover:shadow-md">
               <div className="flex items-center gap-3">
                 <svg
-                  className="h-5 w-5 shrink-0 text-blue-600"
+                  className="h-5 w-5 shrink-0 text-blue-500/70"
                   fill="none"
                   stroke="currentColor"
                   viewBox="0 0 24 24"
@@ -160,10 +160,10 @@ export default function Home() {
               </p>
             </div>
             {/* Step 2 */}
-            <div className="rounded-none border-2 border-blue-300 bg-white p-6 transition-transform transition-shadow duration-200 hover:-translate-y-0.5 hover:shadow-md">
+            <div className="rounded-none border-2 border-blue-200 bg-white p-6 transition-transform transition-shadow duration-200 hover:-translate-y-0.5 hover:shadow-md">
               <div className="flex items-center gap-3">
                 <svg
-                  className="h-5 w-5 shrink-0 text-blue-600"
+                  className="h-5 w-5 shrink-0 text-blue-500/70"
                   fill="none"
                   stroke="currentColor"
                   viewBox="0 0 24 24"
@@ -185,10 +185,10 @@ export default function Home() {
               </p>
             </div>
             {/* Step 3 */}
-            <div className="rounded-none border-2 border-blue-300 bg-white p-6 transition-transform transition-shadow duration-200 hover:-translate-y-0.5 hover:shadow-md">
+            <div className="rounded-none border-2 border-blue-200 bg-white p-6 transition-transform transition-shadow duration-200 hover:-translate-y-0.5 hover:shadow-md">
               <div className="flex items-center gap-3">
                 <svg
-                  className="h-5 w-5 shrink-0 text-blue-600"
+                  className="h-5 w-5 shrink-0 text-blue-500/70"
                   fill="none"
                   stroke="currentColor"
                   viewBox="0 0 24 24"
@@ -210,10 +210,10 @@ export default function Home() {
               </p>
             </div>
             {/* Step 4 */}
-            <div className="rounded-none border-2 border-blue-300 bg-white p-6 transition-transform transition-shadow duration-200 hover:-translate-y-0.5 hover:shadow-md">
+            <div className="rounded-none border-2 border-blue-200 bg-white p-6 transition-transform transition-shadow duration-200 hover:-translate-y-0.5 hover:shadow-md">
               <div className="flex items-center gap-3">
                 <svg
-                  className="h-5 w-5 shrink-0 text-blue-600"
+                  className="h-5 w-5 shrink-0 text-blue-500/70"
                   fill="none"
                   stroke="currentColor"
                   viewBox="0 0 24 24"
@@ -236,7 +236,7 @@ export default function Home() {
             </div>
           </div>
           {/* Disclaimer Callout */}
-          <div className="mt-8 rounded-none border-2 border-blue-300 bg-slate-50 p-6">
+          <div className="mt-8 rounded-none border-2 border-blue-200 bg-slate-50 p-6">
             <div className="flex gap-3">
               <svg
                 className="mt-0.5 h-5 w-5 shrink-0 text-red-600"
@@ -281,7 +281,7 @@ export default function Home() {
               <div className="flex flex-col gap-3 md:flex-row md:items-center md:gap-6">
                 <div className="flex items-center gap-3">
                   <svg
-                    className="h-5 w-5 shrink-0 text-blue-600"
+                    className="h-5 w-5 shrink-0 text-blue-500/70"
                     fill="none"
                     stroke="currentColor"
                     viewBox="0 0 24 24"
@@ -308,7 +308,7 @@ export default function Home() {
               <div className="flex flex-col gap-3 md:flex-row md:items-center md:gap-6">
                 <div className="flex items-center gap-3">
                   <svg
-                    className="h-5 w-5 shrink-0 text-blue-600"
+                    className="h-5 w-5 shrink-0 text-blue-500/70"
                     fill="none"
                     stroke="currentColor"
                     viewBox="0 0 24 24"
@@ -335,7 +335,7 @@ export default function Home() {
               <div className="flex flex-col gap-3 md:flex-row md:items-center md:gap-6">
                 <div className="flex items-center gap-3">
                   <svg
-                    className="h-5 w-5 shrink-0 text-blue-600"
+                    className="h-5 w-5 shrink-0 text-blue-500/70"
                     fill="none"
                     stroke="currentColor"
                     viewBox="0 0 24 24"
@@ -362,7 +362,7 @@ export default function Home() {
               <div className="flex flex-col gap-3 md:flex-row md:items-center md:gap-6">
                 <div className="flex items-center gap-3">
                   <svg
-                    className="h-5 w-5 shrink-0 text-blue-600"
+                    className="h-5 w-5 shrink-0 text-blue-500/70"
                     fill="none"
                     stroke="currentColor"
                     viewBox="0 0 24 24"
@@ -404,7 +404,7 @@ export default function Home() {
             <div className="rounded-none border-2 border-slate-200 bg-white p-6">
               <div className="mb-4 flex items-center gap-3">
                 <svg
-                  className="h-5 w-5 shrink-0 text-blue-600"
+                  className="h-5 w-5 shrink-0 text-blue-500/70"
                   fill="none"
                   stroke="currentColor"
                   viewBox="0 0 24 24"
@@ -436,7 +436,7 @@ export default function Home() {
             <div className="rounded-none border-2 border-slate-200 bg-white p-6">
               <div className="mb-4 flex items-center gap-3">
                 <svg
-                  className="h-5 w-5 shrink-0 text-blue-600"
+                  className="h-5 w-5 shrink-0 text-blue-500/70"
                   fill="none"
                   stroke="currentColor"
                   viewBox="0 0 24 24"
@@ -468,7 +468,7 @@ export default function Home() {
             <div className="rounded-none border-2 border-slate-200 bg-white p-6">
               <div className="mb-4 flex items-center gap-3">
                 <svg
-                  className="h-5 w-5 shrink-0 text-blue-600"
+                  className="h-5 w-5 shrink-0 text-blue-500/70"
                   fill="none"
                   stroke="currentColor"
                   viewBox="0 0 24 24"
@@ -500,7 +500,7 @@ export default function Home() {
             <div className="rounded-none border-2 border-slate-200 bg-white p-6">
               <div className="mb-4 flex items-center gap-3">
                 <svg
-                  className="h-5 w-5 shrink-0 text-blue-600"
+                  className="h-5 w-5 shrink-0 text-blue-500/70"
                   fill="none"
                   stroke="currentColor"
                   viewBox="0 0 24 24"

@@ -84,11 +84,11 @@ export default function NavBar() {
       <nav className="mx-auto flex max-w-5xl items-center justify-between px-6 md:px-8 py-3">
         <Link href="/" className="inline-block">
           <Image
-            src="/brand/dealready-logo.svg"
+            src="/brand/DealReady.svg"
             alt="DealReady"
-            height={40}
-            width={171}
-            className="h-10 md:h-12 w-auto"
+            height={48}
+            width={103}
+            className="h-12 w-auto"
             style={{ width: "auto" }}
             priority
           />
@@ -119,7 +119,7 @@ export default function NavBar() {
                     />
                   </svg>
                 </div>
-                <span className="font-medium">{userLabel}</span>
+                <span className="font-medium text-[#334155]">{userLabel}</span>
               </button>
 
               {dropdownOpen && (

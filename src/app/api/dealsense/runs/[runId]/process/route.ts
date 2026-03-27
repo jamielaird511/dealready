@@ -41,6 +41,9 @@ type CreditFindingsLayer = {
   strengths: string[];
   has_historical_financials: boolean;
   forecast_reliance: boolean;
+  has_proper_financial_documents: boolean;
+  /** Claims (e.g. from plans/applications) only — not evidenced by formal financials or forecast files */
+  narrative_claim_sources_only: boolean;
 };
 
 const AI_EXTRACT_PREVIEW_CHARS = 4000;
@@ -287,12 +290,55 @@ function buildCreditFindingsLayer(params: {
       tags.push("statement_of_position");
     }
 
+    if (textBlock.includes("management accounts") || textBlock.includes("management financial") || textBlock.includes("mgmt accounts")) {
+      tags.push("management_accounts");
+    }
+    if (
+      textBlock.includes("tax return") ||
+      textBlock.includes("income tax return") ||
+      textBlock.includes("ird return")
+    ) {
+      tags.push("tax_returns");
+    }
+    if (
+      textBlock.includes("cashflow model") ||
+      textBlock.includes("cash flow model") ||
+      textBlock.includes("monthly cash flow") ||
+      textBlock.includes("rolling cashflow") ||
+      textBlock.includes("rolling cash flow")
+    ) {
+      tags.push("detailed_cashflow_model");
+    }
+
     return {
       id: f.id ?? null,
       name: name || "(unnamed)",
       tags,
     };
   });
+
+  const hasProperFinancialDocuments = docClassifications.some(
+    (d) =>
+      d.tags.includes("historical_financials") ||
+      d.tags.includes("management_accounts") ||
+      d.tags.includes("tax_returns") ||
+      d.tags.includes("detailed_cashflow_model")
+  );
+  const hasForecastOrCashflowDoc = docClassifications.some(
+    (d) => d.tags.includes("forecast_financials") || d.tags.includes("cashflow_forecast")
+  );
+  const hasNarrativeLowConfidenceDoc = docClassifications.some(
+    (d) =>
+      d.tags.includes("business_plan") ||
+      d.tags.includes("application") ||
+      d.tags.includes("statement_of_position")
+  );
+  const onlyNarrativeOrLowConfidenceSources =
+    !hasProperFinancialDocuments &&
+    !hasForecastOrCashflowDoc &&
+    (docClassifications.length === 0 ||
+      hasNarrativeLowConfidenceDoc ||
+      docClassifications.every((d) => d.tags.length === 0));
 
   const answerById = new Map<string, DealSenseQuestionAnswer>();
   for (const a of dealSenseQuestionAnswers) answerById.set(a.question_id, a);
@@ -432,9 +478,19 @@ function buildCreditFindingsLayer(params: {
     text.includes("business earnings");
   const hasPayeIncome = text.includes("paye") || text.includes("salary and wages");
   if (hasBusinessIncome && hasPayeIncome) {
-    strengths.push(
-      "Repayment supported by diversified income streams, including business earnings and PAYE income."
-    );
+    if (hasProperFinancialDocuments) {
+      strengths.push(
+        "Repayment supported by diversified income streams, including business earnings and PAYE income."
+      );
+    } else if (onlyNarrativeOrLowConfidenceSources) {
+      strengths.push(
+        "The pack references business revenue and existing income as repayment sources; these require confirmation."
+      );
+    } else {
+      strengths.push(
+        "Repayment source indicated as business revenue and existing income (subject to confirmation)."
+      );
+    }
   }
 
   const propertyWordCount = (text.match(/\bproperty\b/g) || []).length;
@@ -450,7 +506,9 @@ function buildCreditFindingsLayer(params: {
     text.includes("additional collateral");
   if (hasMultiplePropertySecurity || hasStrongAssetBacking) {
     strengths.push(
-      "Lending supported by multiple property securities, providing additional downside protection."
+      hasProperFinancialDocuments
+        ? "Lending supported by multiple property securities, providing additional downside protection."
+        : "Multiple property securities are referenced in the pack; confirm security structure, values, and ranking with usual lender due diligence."
     );
   }
 
@@ -535,9 +593,27 @@ function buildCreditFindingsLayer(params: {
 
   const hasMajorServicingExclusionFlaw = explicitCashflowExclusion;
   const forecastOnlyWithoutContext = hasForecastOnlySignals && !hasServicingCommentary && !hasSupportingContext;
-  if (!hasMajorServicingExclusionFlaw && servicingSignalCount >= 4 && hasServicingCommentary && !forecastOnlyWithoutContext) {
+  const canBroadlyEvidence =
+    hasProperFinancialDocuments &&
+    !hasMajorServicingExclusionFlaw &&
+    servicingSignalCount >= 4 &&
+    hasServicingCommentary &&
+    !forecastOnlyWithoutContext;
+  const someFinancialSignalsNoProperDocs =
+    !hasProperFinancialDocuments &&
+    (servicingSignalCount >= 2 || (hasEarningsBasis && hasDebtObligations));
+
+  if (canBroadlyEvidence) {
     strengths.push(
       "Serviceability is broadly evidenced, although lenders may apply their own servicing methodology."
+    );
+  } else if (onlyNarrativeOrLowConfidenceSources) {
+    risks.push(
+      "Serviceability is not clearly evidenced, as supporting financial information is limited."
+    );
+  } else if (someFinancialSignalsNoProperDocs) {
+    structuring.push(
+      "Serviceability is partly evidenced, but key assumptions or supporting detail should be clarified."
     );
   } else if (servicingSignalCount >= 3 || (hasEarningsBasis && hasDebtObligations)) {
     structuring.push(
@@ -566,6 +642,8 @@ function buildCreditFindingsLayer(params: {
     strengths: [...new Set(strengths)],
     has_historical_financials: historicalFinancialsDetected,
     forecast_reliance: forecastRelianceSignal,
+    has_proper_financial_documents: hasProperFinancialDocuments,
+    narrative_claim_sources_only: onlyNarrativeOrLowConfidenceSources,
   };
 }
 
@@ -1262,6 +1340,8 @@ export async function POST(
           strengths: creditFindingsLayer.strengths,
           has_historical_financials: creditFindingsLayer.has_historical_financials,
           forecast_reliance: creditFindingsLayer.forecast_reliance,
+          has_proper_financial_documents: creditFindingsLayer.has_proper_financial_documents,
+          narrative_claim_sources_only: creditFindingsLayer.narrative_claim_sources_only,
           unknowns_label:
             businessClarifications.length > 0
               ? "Key clarifications required before submission"

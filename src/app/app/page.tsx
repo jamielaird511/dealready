@@ -1,9 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
+
+type DealRow = { id: string; name?: string | null; status?: string | null; updated_at?: string | null };
+type SortColumn = "name" | "status" | "updated_at";
 
 export default function AppHome() {
   const router = useRouter();
@@ -11,6 +13,65 @@ export default function AppHome() {
   const [showCreateDeal, setShowCreateDeal] = useState(false);
   const [dealName, setDealName] = useState("");
   const [purposeType, setPurposeType] = useState<string>("other");
+  const [dealsLoading, setDealsLoading] = useState(true);
+  const [dealsError, setDealsError] = useState<string | null>(null);
+  const [deals, setDeals] = useState<DealRow[]>([]);
+  const [sortColumn, setSortColumn] = useState<SortColumn>("updated_at");
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
+
+  function toggleSort(column: SortColumn) {
+    if (sortColumn === column) {
+      setSortDirection((prev) => (prev === "asc" ? "desc" : "asc"));
+      return;
+    }
+    setSortColumn(column);
+    setSortDirection("asc");
+  }
+
+  const sortedDeals = useMemo(() => {
+    const sorted = [...deals];
+    sorted.sort((a, b) => {
+      let cmp = 0;
+      if (sortColumn === "name") {
+        cmp = (a.name ?? "").localeCompare(b.name ?? "", undefined, { sensitivity: "base" });
+      } else if (sortColumn === "status") {
+        cmp = (a.status ?? "").localeCompare(b.status ?? "", undefined, { sensitivity: "base" });
+      } else {
+        cmp = (new Date(a.updated_at ?? 0).getTime() || 0) - (new Date(b.updated_at ?? 0).getTime() || 0);
+      }
+      return sortDirection === "asc" ? cmp : -cmp;
+    });
+    return sorted;
+  }, [deals, sortColumn, sortDirection]);
+
+  useEffect(() => {
+    async function loadDeals() {
+      const supabase = supabaseBrowser();
+      const { data: { user }, error: userError } = await supabase.auth.getUser();
+      if (userError || !user) {
+        setDealsError("Not authenticated. Please sign in.");
+        setDealsLoading(false);
+        return;
+      }
+
+      const { data, error } = await supabase
+        .from("deals")
+        .select("id, name, status, updated_at")
+        .eq("broker_id", user.id)
+        .order("updated_at", { ascending: false });
+
+      if (error) {
+        setDealsError(error.message);
+        setDealsLoading(false);
+        return;
+      }
+
+      setDeals((data ?? []) as DealRow[]);
+      setDealsLoading(false);
+    }
+
+    loadDeals();
+  }, []);
 
   async function createDeal() {
     setCreating(true);
@@ -89,26 +150,26 @@ export default function AppHome() {
   }
 
   return (
-    <div className="space-y-8">
-      <div className="flex items-start justify-between">
-          <div>
-            <h1 className="text-3xl font-semibold text-gray-900 mb-2">Broker Dashboard</h1>
-            <p className="text-base text-gray-600">
-              Manage your deals, submissions, and requests.
-            </p>
-          </div>
-          <button
-            onClick={() => {
-              setDealName("New Deal");
-              setPurposeType("other");
-              setShowCreateDeal(true);
-            }}
-            disabled={creating}
-            className="inline-flex items-center justify-center rounded-none bg-emerald-500 px-6 py-2 text-sm font-semibold text-white transition-all duration-150 ease-out hover:-translate-y-0.5 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-emerald-400 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:shadow-none"
-          >
-            {creating ? "Creating..." : "New Deal"}
-          </button>
+    <div className="space-y-5">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-semibold text-gray-900 mb-2">Your Deals</h1>
+          <p className="text-base text-gray-600">
+            Create and manage your deals.
+          </p>
         </div>
+        <button
+          onClick={() => {
+            setDealName("New Deal");
+            setPurposeType("other");
+            setShowCreateDeal(true);
+          }}
+          disabled={creating}
+          className="inline-flex items-center justify-center rounded-none bg-emerald-500 px-8 py-3 text-base font-semibold text-white transition-all duration-150 ease-out hover:-translate-y-0.5 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-emerald-400 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:shadow-none"
+        >
+          {creating ? "Creating..." : "New Deal"}
+        </button>
+      </div>
 
       {showCreateDeal && (
         <div
@@ -188,129 +249,68 @@ export default function AppHome() {
         </div>
       )}
 
-        <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
-          {/* Deals Card */}
-          <Link
-            href="/app/deals"
-            className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 transition-transform transition-shadow duration-200 hover:-translate-y-0.5 hover:shadow-md"
-          >
-            <div className="flex items-center gap-3 mb-3">
-              <svg
-                className="h-5 w-5 shrink-0 text-blue-600"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-                aria-hidden="true"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-                />
-              </svg>
-              <h2 className="text-lg font-semibold leading-tight text-slate-900">
-                Deals
-              </h2>
-            </div>
-            <p className="text-sm leading-6 text-slate-600">
-              View and manage your deals.
-            </p>
-          </Link>
-
-          {/* Submissions Card */}
-          <Link
-            href="/app/submissions"
-            className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 transition-transform transition-shadow duration-200 hover:-translate-y-0.5 hover:shadow-md"
-          >
-            <div className="flex items-center gap-3 mb-3">
-              <svg
-                className="h-5 w-5 shrink-0 text-blue-600"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-                aria-hidden="true"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"
-                />
-              </svg>
-              <h2 className="text-lg font-semibold leading-tight text-slate-900">
-                Submissions
-              </h2>
-            </div>
-            <p className="text-sm leading-6 text-slate-600">
-              Track your deal submissions to lenders.
-            </p>
-          </Link>
-
-          {/* Requests Card */}
-          <Link
-            href="/app/requests"
-            className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 transition-transform transition-shadow duration-200 hover:-translate-y-0.5 hover:shadow-md"
-          >
-            <div className="flex items-center gap-3 mb-3">
-              <svg
-                className="h-5 w-5 shrink-0 text-blue-600"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-                aria-hidden="true"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
-                />
-              </svg>
-              <h2 className="text-lg font-semibold leading-tight text-slate-900">
-                Requests
-              </h2>
-            </div>
-            <p className="text-sm leading-6 text-slate-600">
-              View lender requests and inquiries.
-            </p>
-          </Link>
-
-          {/* Settings Card */}
-          <Link
-            href="/app/settings"
-            className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 transition-transform transition-shadow duration-200 hover:-translate-y-0.5 hover:shadow-md"
-          >
-            <div className="flex items-center gap-3 mb-3">
-              <svg
-                className="h-5 w-5 shrink-0 text-blue-600"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-                aria-hidden="true"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
-                />
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
-                />
-              </svg>
-              <h2 className="text-lg font-semibold leading-tight text-slate-900">
-                Settings
-              </h2>
-            </div>
-            <p className="text-sm leading-6 text-slate-600">
-              Manage your account and preferences.
-            </p>
-          </Link>
-        </div>
+      <section className="space-y-2">
+        {dealsLoading ? (
+          <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
+            <p className="text-sm text-slate-600">Loading deals...</p>
+          </div>
+        ) : dealsError ? (
+          <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
+            <p className="text-sm text-red-600">Error: {dealsError}</p>
+          </div>
+        ) : deals.length === 0 ? (
+          <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
+            <p className="text-sm text-slate-700">No deals yet</p>
+            <p className="text-sm text-slate-600 mt-1">Create your first deal to get started</p>
+          </div>
+        ) : (
+          <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+            <table className="w-full">
+              <thead className="bg-slate-50 border-b border-slate-200">
+                <tr>
+                  <th className="px-6 py-2 text-left text-xs font-semibold text-slate-700">
+                    <button type="button" onClick={() => toggleSort("name")} className="inline-flex items-center gap-1">
+                      Deal Name
+                      {sortColumn === "name" ? (sortDirection === "asc" ? "↑" : "↓") : ""}
+                    </button>
+                  </th>
+                  <th className="px-6 py-2 text-left text-xs font-semibold text-slate-700">
+                    <button type="button" onClick={() => toggleSort("status")} className="inline-flex items-center gap-1">
+                      Status
+                      {sortColumn === "status" ? (sortDirection === "asc" ? "↑" : "↓") : ""}
+                    </button>
+                  </th>
+                  <th className="px-6 py-2 text-left text-xs font-semibold text-slate-700">
+                    <button type="button" onClick={() => toggleSort("updated_at")} className="inline-flex items-center gap-1">
+                      Last Updated
+                      {sortColumn === "updated_at" ? (sortDirection === "asc" ? "↑" : "↓") : ""}
+                    </button>
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200">
+                {sortedDeals.map((deal) => (
+                  <tr
+                    key={deal.id}
+                    onClick={() => router.push(`/app/deals/${deal.id}`)}
+                    className="cursor-pointer hover:bg-slate-50 transition-colors"
+                  >
+                    <td className="px-6 py-2.5 text-sm font-medium text-slate-900">{deal.name || "Unnamed Deal"}</td>
+                    <td className="px-6 py-2.5 text-sm text-slate-700">
+                      <span className="inline-flex items-center rounded-full border border-slate-300 px-2 py-0.5 text-xs font-medium text-slate-700">
+                        {deal.status || "—"}
+                      </span>
+                    </td>
+                    <td className="px-6 py-2.5 text-sm text-slate-600">
+                      {deal.updated_at ? new Date(deal.updated_at).toLocaleDateString() : "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
     </div>
   );
 }
