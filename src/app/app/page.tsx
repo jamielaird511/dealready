@@ -12,7 +12,7 @@ export default function AppHome() {
   const [creating, setCreating] = useState(false);
   const [showCreateDeal, setShowCreateDeal] = useState(false);
   const [dealName, setDealName] = useState("");
-  const [purposeType, setPurposeType] = useState<string>("other");
+  const [purposeType, setPurposeType] = useState<string>("business_purchase");
   const [dealsLoading, setDealsLoading] = useState(true);
   const [dealsError, setDealsError] = useState<string | null>(null);
   const [deals, setDeals] = useState<DealRow[]>([]);
@@ -110,7 +110,7 @@ export default function AppHome() {
           name: dealName.trim(),
           status: "draft",
           organization_id: organizationId,
-          purpose_type: purposeType || "other",
+          purpose_type: purposeType || "business_purchase",
           purpose_notes: null,
         })
         .select()
@@ -132,7 +132,7 @@ export default function AppHome() {
       // Route to the new deal workspace
       setShowCreateDeal(false);
       setDealName("");
-      setPurposeType("other");
+      setPurposeType("business_purchase");
       router.push(`/app/deals/${deal.id}?upload=1`);
     } catch (err) {
       console.error("Error creating deal (raw):", err);
@@ -161,7 +161,7 @@ export default function AppHome() {
         <button
           onClick={() => {
             setDealName("New Deal");
-            setPurposeType("other");
+            setPurposeType("business_purchase");
             setShowCreateDeal(true);
           }}
           disabled={creating}
@@ -211,7 +211,6 @@ export default function AppHome() {
                   onChange={(e) => setPurposeType(e.target.value)}
                   className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-200 focus:border-indigo-500"
                 >
-                  <option value="other">Other / not set</option>
                   <option value="business_purchase">Business purchase</option>
                   <option value="working_capital">Working capital</option>
                   <option value="refinance">Refinance / restructure</option>
@@ -220,7 +219,9 @@ export default function AppHome() {
                   <option value="equipment">Equipment / asset purchase</option>
                   <option value="startup">Start-up / new business</option>
                   <option value="expansion">Business expansion</option>
+                  <option value="other">Other / not set</option>
                 </select>
+                <p className="text-sm text-slate-600 mt-1">Currently optimised for Business Purchase deals</p>
               </div>
             </div>
 

@@ -27,16 +27,6 @@ export default function AppLayout({
               >
                 Dashboard
               </Link>
-              <Link
-                href="/app/deals"
-                className={`px-3 py-1 rounded-md text-sm font-medium leading-none transition-colors whitespace-nowrap ${
-                  pathname?.startsWith("/app/deals")
-                    ? "bg-gray-100 text-gray-900"
-                    : "text-gray-600 hover:text-gray-900 hover:bg-gray-50"
-                }`}
-              >
-                Deals
-              </Link>
             </div>
           </div>
         </div>
